@@ -183,17 +183,17 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             type="button"
             onClick={onOpenAuthModal}
             className={`px-3.5 py-2 text-xs font-semibold rounded-lg border ${
-              currentUser
+              currentUser || playerProfile
                 ? `${theme.accentBorder} ${theme.bgElevated}`
                 : `${theme.accentBg} ${theme.accentText}`
             } hover:opacity-90 transition-opacity flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer`}
           >
-            {currentUser ? (
+            {currentUser || playerProfile ? (
               <>
                 <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
                 <span>
                   {playerProfile?.displayName ||
-                    currentUser.displayName ||
+                    currentUser?.displayName ||
                     'Player'}
                 </span>
                 <span className={`font-mono-tabular ${theme.textMuted}`}>

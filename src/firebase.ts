@@ -1,9 +1,13 @@
 import { initializeApp } from 'firebase/app';
 import {
+  createUserWithEmailAndPassword,
   getAuth,
   GoogleAuthProvider,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
+  updateProfile,
   User,
 } from 'firebase/auth';
 import {
@@ -32,6 +36,7 @@ import {
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 const googleProvider = new GoogleAuthProvider();
 
 export enum OperationType {
@@ -112,10 +117,177 @@ export function sanitizeDisplayName(raw: string): string {
   return trimmed.length >= 1 ? trimmed : 'Cruciverbalist';
 }
 
+export interface FormattedAuthError {
+  message: string;
+  code: string;
+  isUnauthorizedDomain: boolean;
+  isProviderDisabled: boolean;
+  hostname: string;
+  projectId: string;
+}
+
+export function formatFirebaseAuthError(err: unknown): FormattedAuthError {
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const codeMatch = rawMessage.match(/\((auth\/[^)]+)\)/);
+  const code =
+    (err as { code?: string })?.code || (codeMatch ? codeMatch[1] : 'auth/unknown');
+  const hostname =
+    typeof window !== 'undefined' && window.location?.hostname
+      ? window.location.hostname
+      : 'your-custom-domain.com';
+
+  if (
+    code === 'auth/unauthorized-domain' ||
+    rawMessage.includes('auth/unauthorized-domain')
+  ) {
+    return {
+      code: 'auth/unauthorized-domain',
+      isUnauthorizedDomain: true,
+      isProviderDisabled: false,
+      hostname,
+      projectId: FIREBASE_PROJECT_ID,
+      message: `Domain "${hostname}" is not yet authorized in Firebase Authentication for Google Sign-In. You can register/sign in with Email below, or add "${hostname}" to Firebase Console → Authentication → Settings → Authorized domains.`,
+    };
+  }
+
+  if (
+    code === 'auth/operation-not-allowed' ||
+    rawMessage.includes('auth/operation-not-allowed')
+  ) {
+    return {
+      code: 'auth/operation-not-allowed',
+      isUnauthorizedDomain: false,
+      isProviderDisabled: true,
+      hostname,
+      projectId: FIREBASE_PROJECT_ID,
+      message:
+        'Email/Password Sign-In is not enabled yet in Firebase Console. Enable "Email/Password" under Firebase Console → Authentication → Sign-in method, or continue with your Instant Device Account below.',
+    };
+  }
+
+  if (code === 'auth/email-already-in-use') {
+    return {
+      code,
+      isUnauthorizedDomain: false,
+      isProviderDisabled: false,
+      hostname,
+      projectId: FIREBASE_PROJECT_ID,
+      message:
+        'An account with this email already exists. Switch to "Sign In with Email" to log in.',
+    };
+  }
+
+  if (
+    code === 'auth/invalid-credential' ||
+    code === 'auth/wrong-password' ||
+    code === 'auth/user-not-found'
+  ) {
+    return {
+      code,
+      isUnauthorizedDomain: false,
+      isProviderDisabled: false,
+      hostname,
+      projectId: FIREBASE_PROJECT_ID,
+      message:
+        'Invalid email or password. Please check your credentials or switch to "Register with Email" to create a new account.',
+    };
+  }
+
+  if (code === 'auth/weak-password') {
+    return {
+      code,
+      isUnauthorizedDomain: false,
+      isProviderDisabled: false,
+      hostname,
+      projectId: FIREBASE_PROJECT_ID,
+      message: 'Password must be at least 6 characters long.',
+    };
+  }
+
+  if (code === 'auth/invalid-email') {
+    return {
+      code,
+      isUnauthorizedDomain: false,
+      isProviderDisabled: false,
+      hostname,
+      projectId: FIREBASE_PROJECT_ID,
+      message: 'Please enter a valid email address.',
+    };
+  }
+
+  if (code === 'auth/popup-closed-by-user') {
+    return {
+      code,
+      isUnauthorizedDomain: false,
+      isProviderDisabled: false,
+      hostname,
+      projectId: FIREBASE_PROJECT_ID,
+      message:
+        'Google sign-in popup was closed before completing. You can also register or sign in with your Email address.',
+    };
+  }
+
+  if (code === 'auth/popup-blocked') {
+    return {
+      code,
+      isUnauthorizedDomain: false,
+      isProviderDisabled: false,
+      hostname,
+      projectId: FIREBASE_PROJECT_ID,
+      message:
+        'Sign-in popup was blocked by the browser. Please allow popups or sign in directly with Email & Password below.',
+    };
+  }
+
+  return {
+    code,
+    isUnauthorizedDomain: false,
+    isProviderDisabled: false,
+    hostname,
+    projectId: FIREBASE_PROJECT_ID,
+    message: rawMessage,
+  };
+}
+
 export async function signInWithGoogleAccount(): Promise<User> {
   const result = await signInWithPopup(auth, googleProvider);
   await ensureUserPublicProfile(result.user);
   return result.user;
+}
+
+export async function registerWithEmailAccount(
+  email: string,
+  password: string,
+  displayName: string
+): Promise<User> {
+  const safeName = sanitizeDisplayName(
+    displayName || email.split('@')[0] || 'Cruciverbalist'
+  );
+  const result = await createUserWithEmailAndPassword(
+    auth,
+    email.trim(),
+    password
+  );
+  try {
+    await updateProfile(result.user, { displayName: safeName });
+  } catch {
+    // Non-fatal if auth profile update fails; Firestore profile still stores displayName
+  }
+  await ensureUserPublicProfile(result.user, safeName);
+  return result.user;
+}
+
+export async function signInWithEmailAccount(
+  email: string,
+  password: string
+): Promise<User> {
+  const result = await signInWithEmailAndPassword(auth, email.trim(), password);
+  await ensureUserPublicProfile(result.user);
+  return result.user;
+}
+
+export async function resetEmailPassword(email: string): Promise<void> {
+  await sendPasswordResetEmail(auth, email.trim());
 }
 
 export async function signOutPlayerAccount(): Promise<void> {

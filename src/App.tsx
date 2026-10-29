@@ -40,7 +40,12 @@ import {
 import {
   auth,
   ensureUserPublicProfile,
+  formatFirebaseAuthError,
+  FormattedAuthError,
   recordCloudLeaderboardScore,
+  registerWithEmailAccount,
+  resetEmailPassword,
+  signInWithEmailAccount,
   signInWithGoogleAccount,
   signOutPlayerAccount,
   subscribeToCloudLeaderboard,
@@ -79,6 +84,12 @@ import {
   Grid,
   ShieldCheck,
   X,
+  Keyboard,
+  ChevronLeft,
+  ChevronRight,
+  FastForward,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 
 export default function App() {
@@ -124,11 +135,61 @@ export default function App() {
   // Firebase Auth & Player Profile state
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [playerProfile, setPlayerProfile] = useState<PlayerProfile | null>(
-    null
+    () => {
+      try {
+        const stored = localStorage.getItem('cruciverbalist_device_profile');
+        return stored ? (JSON.parse(stored) as PlayerProfile) : null;
+      } catch {
+        return null;
+      }
+    }
   );
   const [authReady, setAuthReady] = useState<boolean>(false);
   const [authLoading, setAuthLoading] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authErrorDetails, setAuthErrorDetails] =
+    useState<FormattedAuthError | null>(null);
+
+  // Skip already filled boxes option (persisted in localStorage, defaults to true)
+  const [skipFilledCells, setSkipFilledCells] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('cruciverbalist_skip_filled_cells');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+
+  const handleToggleSkipFilled = useCallback(() => {
+    soundFX.playClick();
+    setSkipFilledCells((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('cruciverbalist_skip_filled_cells', String(next));
+      } catch {
+        // ignore storage errors
+      }
+      return next;
+    });
+  }, []);
+
+  // Mobile native keyboard & responsive grid zoom state
+  const mobileKeyboardInputRef = useRef<HTMLInputElement | null>(null);
+  const lastKeyHandledTimestampRef = useRef<number>(0);
+  const [isNativeKeyboardFocused, setIsNativeKeyboardFocused] =
+    useState<boolean>(false);
+  const [mobileGridZoomed, setMobileGridZoomed] = useState<boolean>(false);
+  const [showOnScreenKeys, setShowOnScreenKeys] = useState<boolean>(true);
+
+  const focusNativeKeyboard = useCallback(() => {
+    if (mobileKeyboardInputRef.current) {
+      try {
+        mobileKeyboardInputRef.current.focus({ preventScroll: true });
+      } catch {
+        mobileKeyboardInputRef.current.focus();
+      }
+    }
+  }, []);
 
   // Persisted map of puzzleId -> easiest clue difficulty base chosen by the player on that puzzle
   const [easiestBaseByPuzzle, setEasiestBaseByPuzzle] = useState<
@@ -228,11 +289,17 @@ export default function App() {
           const prof = await ensureUserPublicProfile(user);
           setPlayerProfile(prof);
           setVictoryPlayerName(prof.displayName);
+          try {
+            localStorage.setItem(
+              'cruciverbalist_device_profile',
+              JSON.stringify(prof)
+            );
+          } catch {
+            // ignore storage errors
+          }
         } catch (err) {
           console.error('Failed to initialize player profile:', err);
         }
-      } else {
-        setPlayerProfile(null);
       }
     });
     return () => unsub();
@@ -641,8 +708,38 @@ export default function App() {
             completedAt: londonClock.isoDate,
           });
           setPlayerProfile(updatedProf);
+          try {
+            localStorage.setItem(
+              'cruciverbalist_device_profile',
+              JSON.stringify(updatedProf)
+            );
+          } catch {
+            // ignore
+          }
         } catch (err) {
           console.error('Failed to record score to cloud leaderboard:', err);
+        }
+      } else if (playerProfile) {
+        const myEntries = updatedLocal.filter(
+          (e) =>
+            e.playerName.trim().toLowerCase() ===
+            playerProfile.displayName.trim().toLowerCase()
+        );
+        const totalScore = myEntries.reduce((acc, item) => acc + item.score, 0);
+        const updatedDeviceProf: PlayerProfile = {
+          ...playerProfile,
+          displayName: playerName,
+          puzzlesSolved: Math.max(1, myEntries.length),
+          totalScore,
+        };
+        setPlayerProfile(updatedDeviceProf);
+        try {
+          localStorage.setItem(
+            'cruciverbalist_device_profile',
+            JSON.stringify(updatedDeviceProf)
+          );
+        } catch {
+          // ignore
         }
       }
     },
@@ -654,6 +751,7 @@ export default function App() {
       clueDifficulty,
       stats.accuracy,
       currentUser,
+      playerProfile,
       londonClock.isoDate,
     ]
   );
@@ -784,14 +882,86 @@ export default function App() {
     handleRecordScore,
   ]);
 
-  // Move cursor helper along active word
+  // Helper to locate the first empty cell in a clue when skipFilledCells is active
+  const getTargetCellForClue = useCallback(
+    (
+      clue: PlacedClue,
+      gridData: string[][],
+      skipFilled: boolean
+    ): { row: number; col: number } => {
+      if (skipFilled) {
+        for (let i = 0; i < clue.length; i++) {
+          const r = clue.direction === 'across' ? clue.row : clue.row + i;
+          const c = clue.direction === 'across' ? clue.col + i : clue.col;
+          if ((gridData[r]?.[c] || '') === '') {
+            return { row: r, col: c };
+          }
+        }
+      }
+      return { row: clue.row, col: clue.col };
+    },
+    []
+  );
+
+  // Move cursor helper along active word (optionally skipping already-filled cells)
   const advanceCursorInWord = useCallback(
-    (step: 1 | -1) => {
+    (
+      step: 1 | -1,
+      justTypedCell?: { row: number; col: number },
+      overrideSkipFilled?: boolean
+    ) => {
       if (!activeClue) return;
       const idx =
         activeClue.direction === 'across'
           ? focusedCell.col - activeClue.col
           : focusedCell.row - activeClue.row;
+
+      const useSkip =
+        overrideSkipFilled !== undefined ? overrideSkipFilled : skipFilledCells;
+
+      if (step === 1 && useSkip) {
+        // 1. Scan forward after current cell for the next empty cell in activeClue
+        for (let i = idx + 1; i < activeClue.length; i++) {
+          const r =
+            activeClue.direction === 'across'
+              ? activeClue.row
+              : activeClue.row + i;
+          const c =
+            activeClue.direction === 'across'
+              ? activeClue.col + i
+              : activeClue.col;
+          const isJustTyped =
+            justTypedCell &&
+            justTypedCell.row === r &&
+            justTypedCell.col === c;
+          const isEmpty = !isJustTyped && (userGrid[r]?.[c] || '') === '';
+          if (isEmpty && !revealedCells.has(`${r},${c}`)) {
+            setFocusedCell({ row: r, col: c });
+            return;
+          }
+        }
+        // 2. Wrap around from the start of activeClue up to idx - 1 if earlier cells in this word are still empty
+        for (let i = 0; i < idx; i++) {
+          const r =
+            activeClue.direction === 'across'
+              ? activeClue.row
+              : activeClue.row + i;
+          const c =
+            activeClue.direction === 'across'
+              ? activeClue.col + i
+              : activeClue.col;
+          const isJustTyped =
+            justTypedCell &&
+            justTypedCell.row === r &&
+            justTypedCell.col === c;
+          const isEmpty = !isJustTyped && (userGrid[r]?.[c] || '') === '';
+          if (isEmpty && !revealedCells.has(`${r},${c}`)) {
+            setFocusedCell({ row: r, col: c });
+            return;
+          }
+        }
+      }
+
       const nextIdx = idx + step;
       if (nextIdx >= 0 && nextIdx < activeClue.length) {
         const nextR =
@@ -805,7 +975,7 @@ export default function App() {
         setFocusedCell({ row: nextR, col: nextC });
       }
     },
-    [activeClue, focusedCell]
+    [activeClue, focusedCell, skipFilledCells, userGrid, revealedCells]
   );
 
   // Input a letter into the currently focused cell
@@ -818,7 +988,7 @@ export default function App() {
 
       const key = `${row},${col}`;
       if (revealedCells.has(key)) {
-        advanceCursorInWord(1);
+        advanceCursorInWord(1, { row, col });
         return;
       }
 
@@ -838,7 +1008,7 @@ export default function App() {
         return next;
       });
 
-      advanceCursorInWord(1);
+      advanceCursorInWord(1, { row, col });
     },
     [
       gameState,
@@ -879,13 +1049,29 @@ export default function App() {
           ? col - activeClue.col
           : row - activeClue.row;
       if (idx > 0) {
+        // When stepping back on an empty cell, step to the previous non-revealed cell
+        let targetIdx = idx - 1;
+        while (targetIdx > 0) {
+          const checkR =
+            activeClue.direction === 'across'
+              ? activeClue.row
+              : activeClue.row + targetIdx;
+          const checkC =
+            activeClue.direction === 'across'
+              ? activeClue.col + targetIdx
+              : activeClue.col;
+          if (!revealedCells.has(`${checkR},${checkC}`)) {
+            break;
+          }
+          targetIdx--;
+        }
         const prevR =
           activeClue.direction === 'across'
             ? activeClue.row
-            : activeClue.row + idx - 1;
+            : activeClue.row + targetIdx;
         const prevC =
           activeClue.direction === 'across'
-            ? activeClue.col + idx - 1
+            ? activeClue.col + targetIdx
             : activeClue.col;
         const prevKey = `${prevR},${prevC}`;
         setFocusedCell({ row: prevR, col: prevC });
@@ -909,7 +1095,7 @@ export default function App() {
     activeClue,
   ]);
 
-  // Jump to next or previous clue via Tab / Shift+Tab
+  // Jump to next or previous clue via Tab / Shift+Tab or Mobile Prev/Next buttons
   const handleCycleClue = useCallback(
     (delta: 1 | -1) => {
       const ordered = [
@@ -924,9 +1110,11 @@ export default function App() {
       const nextClue = ordered[nextIdx];
       soundFX.playClick();
       setDirection(nextClue.direction);
-      setFocusedCell({ row: nextClue.row, col: nextClue.col });
+      setFocusedCell(
+        getTargetCellForClue(nextClue, userGrid, skipFilledCells)
+      );
     },
-    [activePuzzle, activeClue]
+    [activePuzzle, activeClue, getTargetCellForClue, userGrid, skipFilledCells]
   );
 
   // Move focus with arrow keys across playable white squares (respecting gridSize 8 or 20)
@@ -948,7 +1136,121 @@ export default function App() {
     [focusedCell, activePuzzle, gridSize]
   );
 
-  // Keyboard listener during active gameplay
+  // Native mobile keyboard <input> handlers (works across iOS Safari, Android Gboard, Samsung Keyboard, and desktop)
+  const handleMobileInputKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (gameState !== 'PLAYING') return;
+      if (isArchiveOpen || isLeaderboardOpen || isAuthModalOpen) return;
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        soundFX.playClick();
+        setGameState('PAUSED');
+        return;
+      }
+
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        lastKeyHandledTimestampRef.current = Date.now();
+        handleCycleClue(e.shiftKey ? -1 : 1);
+        return;
+      }
+
+      if (e.key === ' ') {
+        e.preventDefault();
+        lastKeyHandledTimestampRef.current = Date.now();
+        const cell = activePuzzle.grid[focusedCell.row]?.[focusedCell.col];
+        if (cell && cell.acrossClueId && cell.downClueId) {
+          soundFX.playClick();
+          setDirection((prev) => (prev === 'across' ? 'down' : 'across'));
+        }
+        return;
+      }
+
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        lastKeyHandledTimestampRef.current = Date.now();
+        handleBackspace();
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        lastKeyHandledTimestampRef.current = Date.now();
+        handleArrowMove(0, 1);
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        lastKeyHandledTimestampRef.current = Date.now();
+        handleArrowMove(0, -1);
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        lastKeyHandledTimestampRef.current = Date.now();
+        handleArrowMove(1, 0);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        lastKeyHandledTimestampRef.current = Date.now();
+        handleArrowMove(-1, 0);
+        return;
+      }
+
+      if (/^[a-zA-Z]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        lastKeyHandledTimestampRef.current = Date.now();
+        handleLetterInput(e.key);
+      }
+    },
+    [
+      gameState,
+      isArchiveOpen,
+      isLeaderboardOpen,
+      isAuthModalOpen,
+      activePuzzle,
+      focusedCell,
+      handleCycleClue,
+      handleBackspace,
+      handleArrowMove,
+      handleLetterInput,
+    ]
+  );
+
+  const handleMobileInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (gameState !== 'PLAYING') return;
+      // Avoid double-triggering if onKeyDown already handled this keystroke within the last 35ms
+      if (Date.now() - lastKeyHandledTimestampRef.current < 35) {
+        return;
+      }
+      const rawVal = e.target.value;
+      // Sentinel value is a single space " ". If length became 0, the user pressed Backspace on a mobile keyboard!
+      if (rawVal.length === 0) {
+        handleBackspace();
+        return;
+      }
+      const stripped = rawVal.replace(/\s+/g, '');
+      if (stripped.length > 0) {
+        const lastChar = stripped.slice(-1);
+        if (/^[a-zA-Z]$/.test(lastChar)) {
+          handleLetterInput(lastChar);
+        }
+      } else if (rawVal.length > 1) {
+        // User pressed Spacebar on mobile virtual keyboard -> toggle Across/Down
+        const cell = activePuzzle.grid[focusedCell.row]?.[focusedCell.col];
+        if (cell && cell.acrossClueId && cell.downClueId) {
+          soundFX.playClick();
+          setDirection((prev) => (prev === 'across' ? 'down' : 'across'));
+        }
+      }
+    },
+    [gameState, handleBackspace, handleLetterInput, activePuzzle, focusedCell]
+  );
+
+  // Keyboard listener during active gameplay (when focus is not inside an <input>)
   useEffect(() => {
     if (gameState !== 'PLAYING') return;
 
@@ -1193,36 +1495,183 @@ export default function App() {
     triggerVictoryConfetti();
   };
 
-  // Auth Handlers
+  // Auth Handlers (Google OAuth, Email/Password Registration & Sign-In, Password Reset, and Device Profile Fallback)
   const handleSignInWithGoogle = async () => {
     setAuthLoading(true);
     setAuthError(null);
+    setAuthErrorDetails(null);
     try {
       const user = await signInWithGoogleAccount();
       const prof = await ensureUserPublicProfile(user);
       setPlayerProfile(prof);
       setVictoryPlayerName(prof.displayName);
+      try {
+        localStorage.setItem(
+          'cruciverbalist_device_profile',
+          JSON.stringify(prof)
+        );
+      } catch {
+        // ignore
+      }
       soundFX.playWordComplete();
     } catch (err) {
-      setAuthError(
-        err instanceof Error ? err.message : 'Unable to sign in with Google.'
-      );
+      const formatted = formatFirebaseAuthError(err);
+      setAuthError(formatted.message);
+      setAuthErrorDetails(formatted);
     } finally {
       setAuthLoading(false);
     }
   };
 
+  const handleRegisterWithEmail = async (
+    email: string,
+    password: string,
+    displayName: string
+  ) => {
+    setAuthLoading(true);
+    setAuthError(null);
+    setAuthErrorDetails(null);
+    try {
+      const user = await registerWithEmailAccount(email, password, displayName);
+      const prof = await ensureUserPublicProfile(user, displayName);
+      setPlayerProfile(prof);
+      setVictoryPlayerName(prof.displayName);
+      try {
+        localStorage.setItem(
+          'cruciverbalist_device_profile',
+          JSON.stringify(prof)
+        );
+      } catch {
+        // ignore
+      }
+      soundFX.playWordComplete();
+    } catch (err) {
+      const formatted = formatFirebaseAuthError(err);
+      setAuthError(formatted.message);
+      setAuthErrorDetails(formatted);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignInWithEmail = async (email: string, password: string) => {
+    setAuthLoading(true);
+    setAuthError(null);
+    setAuthErrorDetails(null);
+    try {
+      const user = await signInWithEmailAccount(email, password);
+      const prof = await ensureUserPublicProfile(user);
+      setPlayerProfile(prof);
+      setVictoryPlayerName(prof.displayName);
+      try {
+        localStorage.setItem(
+          'cruciverbalist_device_profile',
+          JSON.stringify(prof)
+        );
+      } catch {
+        // ignore
+      }
+      soundFX.playWordComplete();
+    } catch (err) {
+      const formatted = formatFirebaseAuthError(err);
+      setAuthError(formatted.message);
+      setAuthErrorDetails(formatted);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (email: string) => {
+    setAuthLoading(true);
+    setAuthError(null);
+    setAuthErrorDetails(null);
+    try {
+      await resetEmailPassword(email);
+    } catch (err) {
+      const formatted = formatFirebaseAuthError(err);
+      setAuthError(formatted.message);
+      setAuthErrorDetails(formatted);
+      throw err;
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleActivateDeviceAccount = (email: string, displayName: string) => {
+    const cleanName = displayName.trim().slice(0, 40) || 'Cruciverbalist';
+    const myEntries = leaderboard.filter(
+      (e) => e.playerName.trim().toLowerCase() === cleanName.toLowerCase()
+    );
+    const totalScore = myEntries.reduce((acc, item) => acc + item.score, 0);
+    const deviceProf: PlayerProfile = {
+      uid: `device_${email.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)}`,
+      displayName: cleanName,
+      photoURL: '',
+      puzzlesSolved: myEntries.length,
+      totalScore,
+    };
+    setPlayerProfile(deviceProf);
+    setVictoryPlayerName(cleanName);
+    setAuthError(null);
+    setAuthErrorDetails(null);
+    try {
+      localStorage.setItem(
+        'cruciverbalist_device_profile',
+        JSON.stringify(deviceProf)
+      );
+      localStorage.setItem('cruciverbalist_last_player_name', cleanName);
+    } catch {
+      // ignore
+    }
+    soundFX.playWordComplete();
+  };
+
   const handleSignOut = async () => {
     setAuthError(null);
-    await signOutPlayerAccount();
+    setAuthErrorDetails(null);
+    try {
+      await signOutPlayerAccount();
+    } catch {
+      // ignore if device-only
+    }
     setPlayerProfile(null);
+    try {
+      localStorage.removeItem('cruciverbalist_device_profile');
+    } catch {
+      // ignore
+    }
   };
 
   const handleUpdateDisplayName = async (newName: string) => {
-    if (!currentUser) return;
-    const updated = await updatePlayerCallsign(currentUser, newName);
-    setPlayerProfile(updated);
-    setVictoryPlayerName(updated.displayName);
+    if (currentUser) {
+      const updated = await updatePlayerCallsign(currentUser, newName);
+      setPlayerProfile(updated);
+      setVictoryPlayerName(updated.displayName);
+      try {
+        localStorage.setItem(
+          'cruciverbalist_device_profile',
+          JSON.stringify(updated)
+        );
+      } catch {
+        // ignore
+      }
+    } else if (playerProfile) {
+      const cleanName = newName.trim().slice(0, 40) || 'Cruciverbalist';
+      const updated: PlayerProfile = {
+        ...playerProfile,
+        displayName: cleanName,
+      };
+      setPlayerProfile(updated);
+      setVictoryPlayerName(cleanName);
+      try {
+        localStorage.setItem(
+          'cruciverbalist_device_profile',
+          JSON.stringify(updated)
+        );
+      } catch {
+        // ignore
+      }
+    }
   };
 
   // Render Title Screen when in TITLE_MENU
@@ -1304,7 +1753,12 @@ export default function App() {
           playerProfile={playerProfile}
           authLoading={authLoading}
           authError={authError}
+          authErrorDetails={authErrorDetails}
           onSignInWithGoogle={handleSignInWithGoogle}
+          onRegisterWithEmail={handleRegisterWithEmail}
+          onSignInWithEmail={handleSignInWithEmail}
+          onResetPassword={handleResetPassword}
+          onActivateDeviceAccount={handleActivateDeviceAccount}
           onSignOut={handleSignOut}
           onUpdateDisplayName={handleUpdateDisplayName}
           leaderboard={leaderboard}
@@ -1346,993 +1800,949 @@ export default function App() {
 
         {/* Top Perimeter HUD Bar */}
         <header
-          className={`relative z-10 w-full border-b ${theme.borderSubtle} ${theme.bgSurface} px-4 lg:px-6 py-2.5`}
+          className={`relative z-10 w-full border-b ${theme.borderSubtle} ${theme.bgSurface} px-3 sm:px-4 lg:px-6 py-2 sm:py-2.5`}
         >
-        <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-4">
-          {/* Left: Return to Title, Format Switcher (20x20 vs 8x8), Date & Edition Name */}
-          <div className="flex items-center gap-3 min-w-0">
-            <button
-              type="button"
-              onClick={() => {
-                soundFX.playClick();
-                setGameState('TITLE_MENU');
-              }}
-              className={`px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} text-xs font-medium flex items-center gap-1.5 hover:opacity-85 cursor-pointer whitespace-nowrap shrink-0`}
-            >
-              <Home className="w-3.5 h-3.5" />
-              <span>Title Menu</span>
-            </button>
-
-            {/* Quick Format Toggle: 20x20 Standard vs 8x8 Quick */}
-            <div
-              className={`hidden sm:flex items-center p-0.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} shrink-0`}
-            >
-              <button
-                type="button"
-                onClick={() => handleSwitchFormatInPlay(20)}
-                className={`px-2.5 py-1 rounded-md text-xs font-mono-tabular font-semibold flex items-center gap-1 cursor-pointer ${
-                  gridSize === 20
-                    ? `${theme.accentBg} ${theme.accentText}`
-                    : `${theme.textSecondary}`
-                }`}
-                title="Switch to 20×20 Standard Edition"
-              >
-                <Grid className="w-3 h-3" />
-                <span>20×20</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSwitchFormatInPlay(8)}
-                className={`px-2.5 py-1 rounded-md text-xs font-mono-tabular font-semibold flex items-center gap-1 cursor-pointer ${
-                  gridSize === 8
-                    ? `${theme.accentBg} ${theme.accentText}`
-                    : `${theme.textSecondary}`
-                }`}
-                title="Switch to 8×8 Daily Quick Crossword"
-              >
-                <Zap className="w-3 h-3" />
-                <span>8×8 Quick</span>
-              </button>
-            </div>
-
-            <div className="min-w-0">
-              <div className="text-sm font-bold font-display truncate">
-                {activePuzzle.title}
-              </div>
-              <div
-                className={`text-xs ${theme.textMuted} truncate font-mono-tabular`}
-              >
-                <span>
-                  {activePuzzle.archiveDate} ({activePuzzle.dayOfWeekName})
-                </span>
-                <span className="mx-1.5" aria-hidden="true">
-                  ·
-                </span>
-                <span>
-                  {activePuzzle.editionType === 'quick-8x8'
-                    ? '8×8 Quick Sprint'
-                    : activePuzzle.editionType === 'weekend-themed'
-                    ? `Weekend Theme: ${activePuzzle.themeName}`
-                    : activePuzzle.editionType === 'weekday-general'
-                    ? '20×20 Weekday General'
-                    : `Custom Theme: ${activePuzzle.themeName}`}
-                </span>
-                <span className="mx-1.5" aria-hidden="true">
-                  ·
-                </span>
-                <span title="New daily crosswords generate at 00:00 London, UK time">
-                  00:00 London in {londonClock.countdownToMidnight}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Center: Tabular Game Telemetry Cluster with Base Score & -25 pts / 60s Time Deduction */}
-          <div className="flex items-center gap-4 text-xs font-mono-tabular">
-            <div title="Base score by easiest clue tier chosen today minus 25 points for every 60 seconds taken">
-              <span className={theme.textMuted}>SCORE </span>
-              <span className="font-bold text-sm">
-                {stats.score.toLocaleString()}
-              </span>
-              <span className={`ml-1 text-[11px] ${theme.textMuted} uppercase`}>
-                ({easiestBaseForActivePuzzle} base
-                {stats.timePenalty > 0 ? ` −${stats.timePenalty}` : ''})
-              </span>
-            </div>
-            <span className={theme.textMuted} aria-hidden="true">
-              ·
-            </span>
-            <div>
-              <span className={theme.textMuted}>WORDS </span>
-              <span className="font-bold text-sm">
-                {stats.solvedWords}/{stats.totalWords}
-              </span>
-            </div>
-            <span className={theme.textMuted} aria-hidden="true">
-              ·
-            </span>
-            <div>
-              <span className={theme.textMuted}>GRID </span>
-              <span className="font-bold text-sm">{stats.progressPercent}%</span>
-            </div>
-            <span className={theme.textMuted} aria-hidden="true">
-              ·
-            </span>
-            <div>
-              <span className={theme.textMuted}>TIME </span>
-              <span className="font-bold text-sm">
-                {formatDuration(elapsedSeconds)}
-              </span>
-            </div>
-          </div>
-
-          {/* Right: Player Account, Archive, Scoreboard, Palette, Pause, Mute */}
-          <div className="flex items-center gap-2">
-            {gameState === 'VICTORY' && isVictoryPopupDismissed && (
-              <button
-                type="button"
-                onClick={() => {
-                  soundFX.playVictory();
-                  setIsVictoryPopupDismissed(false);
-                  triggerVictoryConfetti();
-                }}
-                className="px-3 py-1.5 rounded-lg bg-amber-500 text-slate-950 text-xs font-bold flex items-center gap-1.5 hover:bg-amber-400 cursor-pointer whitespace-nowrap shrink-0"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Solved Summary</span>
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                soundFX.playClick();
-                setIsAuthModalOpen(true);
-              }}
-              className={`px-3 py-1.5 rounded-lg border ${
-                currentUser
-                  ? `${theme.accentBorder} ${theme.bgElevated}`
-                  : `${theme.accentBg} ${theme.accentText}`
-              } text-xs font-semibold flex items-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap shrink-0`}
-            >
-              {currentUser ? (
-                <>
-                  <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
-                  <span className="max-w-[110px] truncate">
-                    {playerProfile?.displayName ||
-                      currentUser.displayName ||
-                      'Account'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <LogIn className="w-3.5 h-3.5" />
-                  <span>Sign In</span>
-                </>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                soundFX.playClick();
-                setIsArchiveOpen(true);
-              }}
-              className={`px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} text-xs font-medium flex items-center gap-1.5 hover:opacity-85 cursor-pointer whitespace-nowrap shrink-0`}
-            >
-              <Calendar className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Archive</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                soundFX.playClick();
-                setIsLeaderboardOpen(true);
-              }}
-              className={`px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} text-xs font-medium flex items-center gap-1.5 hover:opacity-85 cursor-pointer whitespace-nowrap shrink-0`}
-            >
-              <Trophy className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Scoreboard</span>
-            </button>
-
-            <select
-              aria-label="Board visual palette"
-              value={visualThemeId}
-              onChange={(e) => {
-                soundFX.playClick();
-                setVisualThemeId(e.target.value as VisualThemeId);
-              }}
-              className={`px-2.5 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} ${theme.textPrimary} text-xs font-medium cursor-pointer focus:outline-none`}
-            >
-              {(Object.keys(VISUAL_THEMES) as VisualThemeId[]).map((k) => (
-                <option key={k} value={k}>
-                  {VISUAL_THEMES[k].name}
-                </option>
-              ))}
-            </select>
-
-            <button
-              type="button"
-              onClick={() => {
-                soundFX.playClick();
-                setGameState((prev) =>
-                  prev === 'PAUSED' ? 'PLAYING' : 'PAUSED'
-                );
-              }}
-              className={`p-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-85 cursor-pointer`}
-              aria-label={gameState === 'PAUSED' ? 'Resume game' : 'Pause game'}
-            >
-              {gameState === 'PAUSED' ? (
-                <Play className="w-4 h-4" />
-              ) : (
-                <Pause className="w-4 h-4" />
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleToggleMute}
-              className={`p-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-85 cursor-pointer`}
-              aria-label={isMuted ? 'Unmute audio' : 'Mute audio'}
-            >
-              {isMuted ? (
-                <VolumeX className="w-4 h-4" />
-              ) : (
-                <Volume2 className="w-4 h-4" />
-              )}
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main 1440px Playfield Workspace */}
-      <main className="relative z-10 flex-1 w-full max-w-[1440px] mx-auto px-4 lg:px-6 py-4 grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-        {/* Left/Center Column (7 cols on XL): Active Clue Banner + 20x20 or 8x8 Grid + On-Screen Key Strip */}
-        <div className="xl:col-span-7 flex flex-col items-center w-full">
-          {/* Active Clue Spotlight Bar directly above the Grid */}
-          <div
-            className={`w-full mb-3 p-3.5 rounded-xl border ${theme.borderSubtle} ${theme.bgSurface} flex flex-col sm:flex-row sm:items-center justify-between gap-3`}
-          >
-            {activeClue ? (
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 text-xs mb-1">
-                  <span className="font-mono-tabular font-bold uppercase">
-                    {activeClue.number} {activeClue.direction}
-                  </span>
-                  <span className={theme.textMuted} aria-hidden="true">
-                    ·
-                  </span>
-                  <span className="font-mono-tabular">
-                    {activeClue.length} Letters
-                  </span>
-                  <span className={theme.textMuted} aria-hidden="true">
-                    ·
-                  </span>
-                  <span className="font-semibold">
-                    {getDifficultyDescriptor(clueDifficulty)}
-                  </span>
-                </div>
-                <div className="text-sm sm:text-base font-medium leading-snug">
-                  {getClueTextForDifficulty(activeClue)}
-                </div>
-                {unlockedBreakdowns.has(activeClue.id) && (
-                  <div
-                    className={`mt-1.5 text-xs ${theme.textSecondary} italic`}
-                  >
-                    Hint Breakdown: {activeClue.crypticBreakdown} (
-                    {activeClue.etymologyOrContext})
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="text-sm">
-                Select any numbered white cell on the {gridSize}×{gridSize} grid
-                to begin solving.
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => {
-                  const cell =
-                    activePuzzle.grid[focusedCell.row]?.[focusedCell.col];
-                  if (cell && cell.acrossClueId && cell.downClueId) {
-                    soundFX.playClick();
-                    setDirection((prev) =>
-                      prev === 'across' ? 'down' : 'across'
-                    );
-                  }
-                }}
-                className={`px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgElevated} text-xs font-medium flex items-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap shrink-0`}
-                title="Switch between Across and Down (Spacebar)"
-              >
-                <ArrowLeftRight className="w-3.5 h-3.5" />
-                <span>{direction === 'across' ? 'Across' : 'Down'}</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Interactive Crossword Board (20x20 Standard or 8x8 Quick) with Solid Black Crossword Background & 100% Boxes */}
-          <div
-            ref={gridContainerRef}
-            className={`relative w-full ${
-              gridSize === 8 ? 'max-w-[520px]' : 'max-w-[660px]'
-            } aspect-square p-2 rounded-xl border ${theme.borderSubtle} bg-black shadow-sm flex items-center justify-center overflow-hidden`}
-          >
-            {/* Solid Black Crossword Background */}
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 crossword-board-bg"
-            />
-
-            <div
-              className={`relative z-10 w-full h-full grid border ${theme.borderSubtle}`}
-              style={{
-                gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
-                gridTemplateRows: `repeat(${gridSize}, minmax(0, 1fr))`,
-              }}
-              role="grid"
-              aria-label={`${gridSize} by ${gridSize} Crossword Grid`}
-            >
-              {activePuzzle.grid.map((rowArr, rIdx) =>
-                rowArr.map((cell, cIdx) => {
-                  if (cell.isBlocked) {
-                    return (
-                      <div
-                        key={`${rIdx}-${cIdx}`}
-                        className="relative w-full h-full bg-black border-[0.5px] border-black/25 overflow-hidden"
-                        role="gridcell"
-                        aria-disabled="true"
-                      />
-                    );
-                  }
-
-                  const cellKey = `${rIdx},${cIdx}`;
-                  const isFocused =
-                    focusedCell.row === rIdx && focusedCell.col === cIdx;
-                  const isInActiveWord = activeWordCells.has(cellKey);
-                  const isRevealed = revealedCells.has(cellKey);
-                  const hasError = errorCells.has(cellKey);
-                  const val = userGrid[rIdx]?.[cIdx] || '';
-
-                  let bgClass = theme.gridCellBg;
-                  let textClass = theme.gridCellText;
-                  if (isFocused) {
-                    bgClass = theme.gridCellFocused;
-                    textClass = theme.gridCellFocusedText;
-                  } else if (isInActiveWord) {
-                    bgClass = theme.gridCellActiveWord;
-                  }
-
-                  return (
-                    <button
-                      key={`${rIdx}-${cIdx}`}
-                      type="button"
-                      role="gridcell"
-                      aria-label={`Row ${rIdx + 1} Column ${cIdx + 1}${
-                        cell.number ? `, Clue ${cell.number}` : ''
-                      }${val ? `, Letter ${val}` : ', Empty'}`}
-                      onClick={() => {
-                        soundFX.playClick();
-                        if (
-                          focusedCell.row === rIdx &&
-                          focusedCell.col === cIdx
-                        ) {
-                          if (cell.acrossClueId && cell.downClueId) {
-                            setDirection((prev) =>
-                              prev === 'across' ? 'down' : 'across'
-                            );
-                          }
-                        } else {
-                          setFocusedCell({ row: rIdx, col: cIdx });
-                        }
-                      }}
-                      className={`relative w-full h-full ${bgClass} ${textClass} border-[0.5px] border-slate-500/35 flex items-center justify-center font-mono-tabular font-bold transition-colors duration-75 focus:outline-none cursor-pointer overflow-hidden`}
-                    >
-                      {cell.number !== undefined && (
-                        <span
-                          className={`pointer-events-none absolute z-10 ${
-                            gridSize === 8
-                              ? 'top-[2px] left-[4px] text-[10px] sm:text-xs'
-                              : 'top-[1px] left-[2px] text-[8px] sm:text-[9px]'
-                          } leading-none font-mono-tabular font-semibold ${
-                            isFocused ? 'opacity-95' : 'opacity-80'
-                          }`}
-                        >
-                          {cell.number}
-                        </span>
-                      )}
-
-                      {isRevealed && (
-                        <span
-                          className="pointer-events-none absolute z-10 top-0 right-0 w-0 h-0 border-t-[6px] border-t-emerald-500 border-l-[6px] border-l-transparent"
-                          title="Anchor letter revealed"
-                        />
-                      )}
-
-                      {hasError && (
-                        <span
-                          className="pointer-events-none absolute z-10 inset-0 border-b-2 border-red-500 rotate-45 scale-125"
-                          aria-hidden="true"
-                        />
-                      )}
-
-                      <span
-                        className={`relative z-10 ${
-                          gridSize === 8
-                            ? 'text-lg sm:text-xl md:text-2xl leading-none pt-1.5'
-                            : 'text-xs sm:text-sm md:text-[15px] leading-none pt-1'
-                        }`}
-                      >
-                        {val}
-                      </span>
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* Compact On-Screen Keyboard Strip for Touch / Mouse Input */}
-          <div className="w-full max-w-[660px] mt-3 flex flex-wrap items-center justify-center gap-1">
-            {'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((letter) => (
-              <button
-                key={letter}
-                type="button"
-                onClick={() => handleLetterInput(letter)}
-                className={`w-7 h-8 sm:w-8 sm:h-8 rounded border ${theme.borderSubtle} ${theme.bgSurface} ${theme.textPrimary} font-mono-tabular text-xs font-bold hover:opacity-85 active:scale-95 transition-transform cursor-pointer`}
-              >
-                {letter}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={handleBackspace}
-              className={`px-2.5 h-8 rounded border ${theme.borderSubtle} ${theme.bgElevated} ${theme.textPrimary} font-mono-tabular text-xs font-semibold hover:opacity-85 cursor-pointer whitespace-nowrap shrink-0`}
-            >
-              ⌫ Back
-            </button>
-          </div>
-        </div>
-
-        {/* Right Column (5 cols on XL): 4-Tier Hint System + Clue Difficulty Selector + Across/Down Lists */}
-        <div className="xl:col-span-5 flex flex-col gap-4 w-full">
-          {/* 4-Tier User-Friendly Hint System Card */}
-          <section
-            className={`p-4 rounded-xl border ${theme.borderSubtle} ${theme.bgSurface}`}
-            aria-label="Multi-tier hint system"
-          >
-            <div className="flex items-center justify-between gap-2 mb-2.5">
-              <div className="flex items-center gap-2">
-                <Lightbulb className="w-4 h-4 text-amber-500" />
-                <h2 className="text-sm font-bold tracking-tight">
-                  4-Tier Cruciverbalist Hint System
-                </h2>
-              </div>
-              <span className={`text-xs ${theme.textMuted} font-mono-tabular`}>
-                Hints Used: {hintsUsed}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <button
-                type="button"
-                onClick={handleHintTier1Breakdown}
-                className={`p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-90 text-left transition-opacity cursor-pointer flex flex-col justify-between`}
-              >
-                <div className="flex items-center justify-between text-xs font-semibold mb-1">
-                  <span>1. Wordplay</span>
-                  <BookOpen className="w-3.5 h-3.5 opacity-70" />
-                </div>
-                <div className={`text-[11px] ${theme.textMuted} leading-tight`}>
-                  Cryptic &amp; context guide
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleHintTier2AnchorLetter}
-                className={`p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-90 text-left transition-opacity cursor-pointer flex flex-col justify-between`}
-              >
-                <div className="flex items-center justify-between text-xs font-semibold mb-1">
-                  <span>2. Letter</span>
-                  <Sparkles className="w-3.5 h-3.5 opacity-70" />
-                </div>
-                <div className={`text-[11px] ${theme.textMuted} leading-tight`}>
-                  Reveal next letter
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleHintTier3CheckWord}
-                className={`p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-90 text-left transition-opacity cursor-pointer flex flex-col justify-between`}
-              >
-                <div className="flex items-center justify-between text-xs font-semibold mb-1">
-                  <span>3. Verify</span>
-                  <CheckCircle2 className="w-3.5 h-3.5 opacity-70" />
-                </div>
-                <div className={`text-[11px] ${theme.textMuted} leading-tight`}>
-                  Check active word
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleHintTier4RevealWord}
-                className={`p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-90 text-left transition-opacity cursor-pointer flex flex-col justify-between`}
-              >
-                <div className="flex items-center justify-between text-xs font-semibold mb-1">
-                  <span>4. Solve</span>
-                  <Eye className="w-3.5 h-3.5 opacity-70" />
-                </div>
-                <div className={`text-[11px] ${theme.textMuted} leading-tight`}>
-                  Reveal full entry
-                </div>
-              </button>
-            </div>
-
-            {hintBannerMessage && (
-              <div
-                className={`mt-3 p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgElevated} text-xs leading-relaxed`}
-              >
-                {hintBannerMessage}
-              </div>
-            )}
-          </section>
-
-          {/* Clue Difficulty Selector & Clue List Card */}
-          <section
-            className={`p-4 rounded-xl border ${theme.borderSubtle} ${theme.bgSurface} flex flex-col gap-3`}
-          >
-            {/* Clue Difficulty Selector with Easiest Base Lock Explanation */}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="text-xs font-bold">
-                  Clue Difficulty · Easiest Base Today:{' '}
-                  <span className="uppercase font-mono-tabular">
-                    {easiestBaseForActivePuzzle} (
-                    {stats.score.toLocaleString()} pts)
-                  </span>
-                </div>
-                <div className={`text-[11px] ${theme.textMuted}`}>
-                  Selecting an easier tier sets your fixed score base for this
-                  puzzle.
-                </div>
-              </div>
-              <div
-                className={`flex items-center gap-1 p-1 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas}`}
-              >
-                {(
-                  [
-                    { id: 'easy', label: 'Easy (1,000)' },
-                    { id: 'medium', label: 'Med (2,000)' },
-                    { id: 'hard', label: 'Hard (3,000)' },
-                  ] as const
-                ).map((mode) => (
-                  <button
-                    key={mode.id}
-                    type="button"
-                    onClick={() =>
-                      handleChangeClueDifficulty(mode.id, activePuzzle.id)
-                    }
-                    className={`px-2.5 py-1 rounded text-xs font-mono-tabular font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                      clueDifficulty === mode.id
-                        ? `${theme.accentBg} ${theme.accentText}`
-                        : `${theme.textSecondary} hover:${theme.textPrimary}`
-                    }`}
-                  >
-                    {mode.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Filter Clue List by keyword or clue number */}
-            <div className="pt-2 border-t border-slate-500/15">
-              <input
-                type="text"
-                value={clueSearchQuery}
-                onChange={(e) => setClueSearchQuery(e.target.value)}
-                placeholder="Filter clues by number or text..."
-                className={`w-full px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} text-xs focus:outline-none`}
-              />
-            </div>
-
-            {/* Dual Scrollable Clue Columns: Across & Down */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-              {/* Across Column */}
-              <div className="flex flex-col">
-                <div
-                  className={`pb-2 mb-2 border-b ${theme.borderSubtle} flex items-center justify-between`}
-                >
-                  <h3 className="text-sm font-bold font-display">Across</h3>
-                  <span
-                    className={`text-xs ${theme.textMuted} font-mono-tabular`}
-                  >
-                    {filteredAcross.length} Clues
-                  </span>
-                </div>
-                <div className="h-[340px] overflow-y-auto pr-1 space-y-1.5 clue-scroll">
-                  {filteredAcross.map((clue) => {
-                    const isCurrent = activeClue?.id === clue.id;
-                    const isDone = completedClueIds.has(clue.id);
-                    return (
-                      <button
-                        key={clue.id}
-                        type="button"
-                        onClick={() => {
-                          soundFX.playClick();
-                          setDirection('across');
-                          setFocusedCell({ row: clue.row, col: clue.col });
-                        }}
-                        className={`w-full text-left p-2.5 rounded-lg border transition-colors cursor-pointer ${
-                          isCurrent
-                            ? `${theme.accentBorder} ${theme.bgElevated}`
-                            : `${theme.borderSubtle} hover:opacity-90`
-                        } ${isDone ? 'opacity-60' : ''}`}
-                      >
-                        <div className="flex items-center justify-between text-[11px] mb-0.5">
-                          <span className="font-mono-tabular font-bold">
-                            {clue.number}. ({clue.length})
-                          </span>
-                          <span className={`${theme.textMuted} capitalize`}>
-                            {clueDifficulty}
-                            {isDone ? ' · Solved' : ''}
-                          </span>
-                        </div>
-                        <div
-                          className={`text-xs leading-snug ${
-                            isDone ? 'line-through' : ''
-                          }`}
-                        >
-                          {getClueTextForDifficulty(clue)}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Down Column */}
-              <div className="flex flex-col">
-                <div
-                  className={`pb-2 mb-2 border-b ${theme.borderSubtle} flex items-center justify-between`}
-                >
-                  <h3 className="text-sm font-bold font-display">Down</h3>
-                  <span
-                    className={`text-xs ${theme.textMuted} font-mono-tabular`}
-                  >
-                    {filteredDown.length} Clues
-                  </span>
-                </div>
-                <div className="h-[340px] overflow-y-auto pr-1 space-y-1.5 clue-scroll">
-                  {filteredDown.map((clue) => {
-                    const isCurrent = activeClue?.id === clue.id;
-                    const isDone = completedClueIds.has(clue.id);
-                    return (
-                      <button
-                        key={clue.id}
-                        type="button"
-                        onClick={() => {
-                          soundFX.playClick();
-                          setDirection('down');
-                          setFocusedCell({ row: clue.row, col: clue.col });
-                        }}
-                        className={`w-full text-left p-2.5 rounded-lg border transition-colors cursor-pointer ${
-                          isCurrent
-                            ? `${theme.accentBorder} ${theme.bgElevated}`
-                            : `${theme.borderSubtle} hover:opacity-90`
-                        } ${isDone ? 'opacity-60' : ''}`}
-                      >
-                        <div className="flex items-center justify-between text-[11px] mb-0.5">
-                          <span className="font-mono-tabular font-bold">
-                            {clue.number}. ({clue.length})
-                          </span>
-                          <span className={`${theme.textMuted} capitalize`}>
-                            {clueDifficulty}
-                            {isDone ? ' · Solved' : ''}
-                          </span>
-                        </div>
-                        <div
-                          className={`text-xs leading-snug ${
-                            isDone ? 'line-through' : ''
-                          }`}
-                        >
-                          {getClueTextForDifficulty(clue)}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-      </main>
-
-      {/* Pause Modal */}
-      {gameState === 'PAUSED' && (
-        <div
-          className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/70"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="pause-modal-title"
-        >
-          <div
-            className={`relative w-full max-w-md p-6 pt-8 rounded-2xl border ${theme.borderSubtle} ${theme.bgSurface} ${theme.textPrimary} text-center space-y-5 shadow-xl`}
-          >
-            {/* Top-Right Close Button */}
-            <button
-              type="button"
-              onClick={() => {
-                soundFX.playClick();
-                setGameState('PLAYING');
-              }}
-              aria-label="Close pause popup"
-              title="Close and resume solving"
-              className={`absolute top-4 right-4 p-2 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-80 transition-opacity cursor-pointer z-10`}
-            >
-              <X className="w-4 h-4" />
-            </button>
-
-            <h2
-              id="pause-modal-title"
-              className="text-2xl font-bold font-display"
-            >
-              Puzzle Paused
-            </h2>
-            <p className={`text-sm ${theme.textSecondary}`}>
-              {activePuzzle.title} ({activePuzzle.archiveDate}) ·{' '}
-              {stats.progressPercent}% Completed
-            </p>
-            <div className="flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  soundFX.playClick();
-                  setGameState('PLAYING');
-                }}
-                className={`w-full py-3 rounded-xl font-semibold text-sm ${theme.accentBg} ${theme.accentText} cursor-pointer`}
-              >
-                Resume Solving
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  soundFX.playClick();
-                  setIsArchiveOpen(true);
-                }}
-                className={`w-full py-2.5 rounded-xl font-medium text-xs border ${theme.borderSubtle} ${theme.bgElevated} flex items-center justify-center gap-2 cursor-pointer`}
-              >
-                <Calendar className="w-3.5 h-3.5" />
-                <span>Browse Past Daily Archive (20×20 &amp; 8×8)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  soundFX.playClick();
-                  initializeBoardForPuzzle(activePuzzle);
-                  setGameState('PLAYING');
-                }}
-                className={`w-full py-2.5 rounded-xl font-medium text-xs border ${theme.borderSubtle} ${theme.bgElevated} flex items-center justify-center gap-2 cursor-pointer`}
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>
-                  Reset {gridSize}×{gridSize} Grid
-                </span>
-              </button>
+          <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-2.5 sm:gap-4">
+            {/* Left: Return to Title, Format Switcher (20x20 vs 8x8), Date & Edition Name */}
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <button
                 type="button"
                 onClick={() => {
                   soundFX.playClick();
                   setGameState('TITLE_MENU');
                 }}
-                className={`w-full py-2.5 rounded-xl font-medium text-xs border ${theme.borderSubtle} hover:opacity-85 cursor-pointer`}
+                className={`px-2.5 sm:px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} text-xs font-medium flex items-center gap-1.5 hover:opacity-85 cursor-pointer whitespace-nowrap shrink-0`}
               >
-                Return to Title Screen
+                <Home className="w-3.5 h-3.5" />
+                <span className="hidden xs:inline sm:inline">Title</span>
               </button>
+
+              {/* Quick Format Toggle: 20x20 Standard vs 8x8 Quick (Visible on Mobile & Desktop) */}
+              <div
+                className={`flex items-center p-0.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} shrink-0`}
+              >
+                <button
+                  type="button"
+                  onClick={() => handleSwitchFormatInPlay(20)}
+                  className={`px-2 sm:px-2.5 py-1 rounded-md text-xs font-mono-tabular font-semibold flex items-center gap-1 cursor-pointer ${
+                    gridSize === 20
+                      ? `${theme.accentBg} ${theme.accentText}`
+                      : `${theme.textSecondary}`
+                  }`}
+                  title="Switch to 20×20 Standard Edition"
+                >
+                  <Grid className="w-3 h-3" />
+                  <span>20×20</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchFormatInPlay(8)}
+                  className={`px-2 sm:px-2.5 py-1 rounded-md text-xs font-mono-tabular font-semibold flex items-center gap-1 cursor-pointer ${
+                    gridSize === 8
+                      ? `${theme.accentBg} ${theme.accentText}`
+                      : `${theme.textSecondary}`
+                  }`}
+                  title="Switch to 8×8 Daily Quick Crossword"
+                >
+                  <Zap className="w-3 h-3" />
+                  <span>8×8</span>
+                </button>
+              </div>
+
+              <div className="min-w-0 hidden md:block">
+                <div className="text-sm font-bold font-display truncate">
+                  {activePuzzle.title}
+                </div>
+                <div
+                  className={`text-xs ${theme.textMuted} truncate font-mono-tabular`}
+                >
+                  <span>
+                    {activePuzzle.archiveDate} ({activePuzzle.dayOfWeekName})
+                  </span>
+                  <span className="mx-1.5" aria-hidden="true">
+                    ·
+                  </span>
+                  <span>
+                    {activePuzzle.editionType === 'quick-8x8'
+                      ? '8×8 Quick Sprint'
+                      : activePuzzle.editionType === 'weekend-themed'
+                      ? `Weekend Theme: ${activePuzzle.themeName}`
+                      : activePuzzle.editionType === 'weekday-general'
+                      ? '20×20 Weekday General'
+                      : `Custom Theme: ${activePuzzle.themeName}`}
+                  </span>
+                  <span className="mx-1.5" aria-hidden="true">
+                    ·
+                  </span>
+                  <span title="New daily crosswords generate at 00:00 London, UK time">
+                    00:00 London in {londonClock.countdownToMidnight}
+                  </span>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* Victory / Puzzle Solved End Game Popup */}
-      {gameState === 'VICTORY' && !isVictoryPopupDismissed && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="victory-modal-title"
-        >
-          <div
-            className={`relative w-full max-w-lg p-7 rounded-2xl border ${theme.borderSubtle} ${theme.bgSurface} ${theme.textPrimary} space-y-6 shadow-2xl overflow-hidden`}
-          >
-            {/* Top-Right Close Button */}
-            <button
-              type="button"
-              onClick={() => {
-                soundFX.playClick();
-                setIsVictoryPopupDismissed(true);
-              }}
-              aria-label="Close end game popup"
-              title="Close popup and view solved grid"
-              className={`absolute top-4 right-4 p-2 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-80 transition-opacity cursor-pointer z-10`}
-            >
-              <X className="w-4 h-4" />
-            </button>
-
-            {/* Animated Celebration Header */}
-            <div className="text-center space-y-2 relative">
-              <div className="inline-flex items-center justify-center relative">
+            {/* Center: Tabular Game Telemetry Cluster with Base Score & -25 pts / 60s Time Deduction */}
+            <div className="flex items-center gap-2 sm:gap-4 text-xs font-mono-tabular">
+              <div title="Base score by easiest clue tier chosen today minus 25 points for every 60 seconds taken">
+                <span className={theme.textMuted}>SCORE </span>
+                <span className="font-bold text-xs sm:text-sm">
+                  {stats.score.toLocaleString()}
+                </span>
                 <span
-                  aria-hidden="true"
-                  className="absolute inset-0 rounded-full bg-amber-400/25 animate-ping"
-                />
+                  className={`hidden sm:inline ml-1 text-[11px] ${theme.textMuted} uppercase`}
+                >
+                  ({easiestBaseForActivePuzzle} base
+                  {stats.timePenalty > 0 ? ` −${stats.timePenalty}` : ''})
+                </span>
+              </div>
+              <span className={theme.textMuted} aria-hidden="true">
+                ·
+              </span>
+              <div className="hidden sm:block">
+                <span className={theme.textMuted}>WORDS </span>
+                <span className="font-bold text-sm">
+                  {stats.solvedWords}/{stats.totalWords}
+                </span>
+              </div>
+              <span
+                className={`hidden sm:inline ${theme.textMuted}`}
+                aria-hidden="true"
+              >
+                ·
+              </span>
+              <div>
+                <span className={theme.textMuted}>GRID </span>
+                <span className="font-bold text-xs sm:text-sm">
+                  {stats.progressPercent}%
+                </span>
+              </div>
+              <span className={theme.textMuted} aria-hidden="true">
+                ·
+              </span>
+              <div>
+                <span className={theme.textMuted}>TIME </span>
+                <span className="font-bold text-xs sm:text-sm">
+                  {formatDuration(elapsedSeconds)}
+                </span>
+              </div>
+            </div>
+
+            {/* Right: Player Account, Archive, Scoreboard, Palette, Pause, Mute */}
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              {gameState === 'VICTORY' && isVictoryPopupDismissed && (
                 <button
                   type="button"
                   onClick={() => {
                     soundFX.playVictory();
+                    setIsVictoryPopupDismissed(false);
                     triggerVictoryConfetti();
                   }}
-                  title="Replay celebratory confetti"
-                  className="relative inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-amber-500/20 text-amber-400 mb-1 hover:bg-amber-500/30 transition-colors cursor-pointer"
+                  className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-500 text-slate-950 text-xs font-bold flex items-center gap-1.5 hover:bg-amber-400 cursor-pointer whitespace-nowrap shrink-0"
                 >
-                  <Trophy className="w-7 h-7 animate-bounce" />
-                  <Sparkles className="w-4 h-4" />
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Solved</span>
                 </button>
-              </div>
-              <h2
-                id="victory-modal-title"
-                className="text-3xl font-bold font-display"
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  soundFX.playClick();
+                  setIsAuthModalOpen(true);
+                }}
+                className={`px-2.5 sm:px-3 py-1.5 rounded-lg border ${
+                  currentUser || playerProfile
+                    ? `${theme.accentBorder} ${theme.bgElevated}`
+                    : `${theme.accentBg} ${theme.accentText}`
+                } text-xs font-semibold flex items-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap shrink-0`}
               >
-                Puzzle Solved!
-              </h2>
-              <p className={`text-sm ${theme.textSecondary}`}>
-                {activePuzzle.title} · {activePuzzle.archiveDate} ·{' '}
-                {activePuzzle.themeName}
-              </p>
-            </div>
-
-            {/* Key Summary: User Name, Time Taken, Points Scored */}
-            <div
-              className={`p-4 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} space-y-3`}
-            >
-              <div className="grid grid-cols-3 gap-3 text-center font-mono-tabular">
-                <div className="px-2">
-                  <div className={`text-xs ${theme.textMuted}`}>USER NAME</div>
-                  <div
-                    className="text-base sm:text-lg font-bold mt-1 truncate font-sans"
-                    title={
-                      playerProfile?.displayName ||
-                      currentUser?.displayName ||
-                      victoryPlayerName ||
-                      'Guest Solver'
-                    }
-                  >
-                    {playerProfile?.displayName ||
-                      currentUser?.displayName ||
-                      victoryPlayerName ||
-                      'Guest Solver'}
-                  </div>
-                </div>
-                <div className={`px-2 border-x ${theme.borderSubtle}`}>
-                  <div className={`text-xs ${theme.textMuted}`}>TIME TAKEN</div>
-                  <div className="text-xl font-bold mt-0.5">
-                    {formatDuration(elapsedSeconds)}
-                  </div>
-                </div>
-                <div className="px-2">
-                  <div className={`text-xs ${theme.textMuted}`}>
-                    POINTS SCORED
-                  </div>
-                  <div className="text-xl font-bold mt-0.5 text-amber-500">
-                    {stats.score.toLocaleString()}
-                  </div>
-                </div>
-              </div>
-
-              {/* Transparent Scoring Breakdown (-25 pts per 60s taken) */}
-              <div
-                className={`pt-2.5 border-t ${theme.borderSubtle} flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs font-mono-tabular ${theme.textSecondary}`}
-              >
-                <span>
-                  Base ({easiestBaseForActivePuzzle}):{' '}
-                  <strong>{stats.baseScore.toLocaleString()} pts</strong>
-                </span>
-                <span aria-hidden="true">·</span>
-                <span>
-                  Time Penalty:{' '}
-                  <strong>
-                    −{stats.timePenalty.toLocaleString()} pts
-                  </strong>{' '}
-                  ({Math.floor(elapsedSeconds / 60)} × 60s @ −25 pts/60s)
-                </span>
-              </div>
-            </div>
-
-            {/* Player Name Customization & Cloud Sync Status */}
-            <form onSubmit={handleVictorySubmit} className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <label className="block text-xs font-semibold">
-                  {currentUser
-                    ? 'Verified Player Name on Cloud & Local Scoreboard'
-                    : 'Player Name on Scoreboard'}
-                </label>
-                {!currentUser && (
-                  <button
-                    type="button"
-                    onClick={() => setIsAuthModalOpen(true)}
-                    className="text-xs font-semibold text-emerald-500 underline cursor-pointer"
-                  >
-                    Register / Sign In for Cloud Sync →
-                  </button>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  required
-                  maxLength={40}
-                  value={victoryPlayerName}
-                  onChange={(e) => setVictoryPlayerName(e.target.value)}
-                  placeholder="Your name or callsign..."
-                  className={`flex-1 px-3.5 py-2 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} text-sm focus:outline-none`}
-                />
-                <button
-                  type="submit"
-                  className={`px-4 py-2 rounded-xl font-semibold text-xs ${theme.accentBg} ${theme.accentText} whitespace-nowrap shrink-0 cursor-pointer`}
-                >
-                  Update Name
-                </button>
-              </div>
-              {victorySubmitted && (
-                <div
-                  className={`p-2.5 rounded-xl border ${theme.borderSubtle} ${theme.bgElevated} text-center text-xs font-semibold flex items-center justify-center gap-2`}
-                >
-                  <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
-                  <span>
-                    {stats.score.toLocaleString()} pts recorded for{' '}
-                    <strong>
+                {currentUser || playerProfile ? (
+                  <>
+                    <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
+                    <span className="max-w-[95px] sm:max-w-[110px] truncate">
                       {playerProfile?.displayName ||
                         currentUser?.displayName ||
-                        victoryPlayerName}
-                    </strong>{' '}
-                    in {formatDuration(elapsedSeconds)}!
-                  </span>
+                        'Account'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>Sign In</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  soundFX.playClick();
+                  setIsArchiveOpen(true);
+                }}
+                className={`px-2.5 sm:px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} text-xs font-medium flex items-center gap-1.5 hover:opacity-85 cursor-pointer whitespace-nowrap shrink-0`}
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Archive</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  soundFX.playClick();
+                  setIsLeaderboardOpen(true);
+                }}
+                className={`px-2.5 sm:px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} text-xs font-medium flex items-center gap-1.5 hover:opacity-85 cursor-pointer whitespace-nowrap shrink-0`}
+              >
+                <Trophy className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Scoreboard</span>
+              </button>
+
+              <select
+                aria-label="Board visual palette"
+                value={visualThemeId}
+                onChange={(e) => {
+                  soundFX.playClick();
+                  setVisualThemeId(e.target.value as VisualThemeId);
+                }}
+                className={`hidden sm:block px-2.5 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} ${theme.textPrimary} text-xs font-medium cursor-pointer focus:outline-none`}
+              >
+                {(Object.keys(VISUAL_THEMES) as VisualThemeId[]).map((k) => (
+                  <option key={k} value={k}>
+                    {VISUAL_THEMES[k].name}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={() => {
+                  soundFX.playClick();
+                  setGameState((prev) =>
+                    prev === 'PAUSED' ? 'PLAYING' : 'PAUSED'
+                  );
+                }}
+                className={`p-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-85 cursor-pointer`}
+                aria-label={gameState === 'PAUSED' ? 'Resume game' : 'Pause game'}
+              >
+                {gameState === 'PAUSED' ? (
+                  <Play className="w-4 h-4" />
+                ) : (
+                  <Pause className="w-4 h-4" />
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleToggleMute}
+                className={`p-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-85 cursor-pointer`}
+                aria-label={isMuted ? 'Unmute audio' : 'Mute audio'}
+              >
+                {isMuted ? (
+                  <VolumeX className="w-4 h-4" />
+                ) : (
+                  <Volume2 className="w-4 h-4" />
+                )}
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {/* Main 1440px Playfield Workspace */}
+        <main className="relative z-10 flex-1 w-full max-w-[1440px] mx-auto px-2.5 sm:px-4 lg:px-6 py-2.5 sm:py-4 grid grid-cols-1 xl:grid-cols-12 gap-4 sm:gap-6 items-start">
+          {/* Left/Center Column (7 cols on XL): Active Clue Banner + 20x20 or 8x8 Grid + On-Screen Key Strip */}
+          <div className="xl:col-span-7 flex flex-col items-center w-full">
+            {/* Active Clue Spotlight Bar + Mobile/Desktop Gameplay Controls directly above the Grid */}
+            <div
+              className={`w-[calc(100%-20px)] mb-2.5 sm:mb-3 p-3 sm:p-3.5 rounded-xl border ${theme.borderSubtle} ${theme.bgSurface} flex flex-col gap-2.5`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                {/* Previous Clue Button for Quick Mobile/Touch Navigation */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleCycleClue(-1);
+                    focusNativeKeyboard();
+                  }}
+                  className={`p-2 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-85 cursor-pointer shrink-0 mt-0.5`}
+                  title="Previous Clue (Shift+Tab)"
+                  aria-label="Previous clue"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+
+                {activeClue ? (
+                  <div
+                    onClick={focusNativeKeyboard}
+                    className="min-w-0 flex-1 px-1 cursor-pointer"
+                  >
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-xs mb-0.5">
+                      <span className="font-mono-tabular font-bold uppercase text-amber-400">
+                        {activeClue.number} {activeClue.direction}
+                      </span>
+                      <span className={theme.textMuted} aria-hidden="true">
+                        ·
+                      </span>
+                      <span className="font-mono-tabular">
+                        {activeClue.length} Letters
+                      </span>
+                      <span
+                        className={`hidden sm:inline ${theme.textMuted}`}
+                        aria-hidden="true"
+                      >
+                        ·
+                      </span>
+                      <span className="hidden sm:inline font-semibold">
+                        {getDifficultyDescriptor(clueDifficulty)}
+                      </span>
+                    </div>
+                    <div className="text-xs sm:text-base font-medium leading-snug">
+                      {getClueTextForDifficulty(activeClue)}
+                    </div>
+                    {unlockedBreakdowns.has(activeClue.id) && (
+                      <div
+                        className={`mt-1 text-xs ${theme.textSecondary} italic`}
+                      >
+                        Hint Breakdown: {activeClue.crypticBreakdown} (
+                        {activeClue.etymologyOrContext})
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-xs sm:text-sm flex-1 px-1">
+                    Tap any numbered white cell on the {gridSize}×{gridSize}{' '}
+                    grid to begin solving.
+                  </div>
+                )}
+
+                {/* Next Clue Button for Quick Mobile/Touch Navigation */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleCycleClue(1);
+                    focusNativeKeyboard();
+                  }}
+                  className={`p-2 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-85 cursor-pointer shrink-0 mt-0.5`}
+                  title="Next Clue (Tab)"
+                  aria-label="Next clue"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Action Strip: Direction Toggle + Skip Filled Boxes Option + Native Device Keyboard Trigger + Mobile Grid Zoom */}
+              <div
+                className={`pt-2 border-t ${theme.borderSubtle} flex flex-wrap items-center justify-between gap-2`}
+              >
+                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                  {/* Switch Across / Down */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cell =
+                        activePuzzle.grid[focusedCell.row]?.[focusedCell.col];
+                      if (cell && cell.acrossClueId && cell.downClueId) {
+                        soundFX.playClick();
+                        setDirection((prev) =>
+                          prev === 'across' ? 'down' : 'across'
+                        );
+                      }
+                      focusNativeKeyboard();
+                    }}
+                    className={`px-2.5 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgElevated} text-xs font-medium flex items-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap shrink-0`}
+                    title="Switch between Across and Down (Spacebar)"
+                  >
+                    <ArrowLeftRight className="w-3.5 h-3.5" />
+                    <span>{direction === 'across' ? 'Across' : 'Down'}</span>
+                  </button>
+
+                  {/* Skip Already Filled Boxes Toggle */}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={skipFilledCells}
+                    onClick={handleToggleSkipFilled}
+                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                      skipFilledCells
+                        ? `${theme.accentBorder} ${theme.bgElevated} text-emerald-400`
+                        : `${theme.borderSubtle} ${theme.bgCanvas} ${theme.textSecondary}`
+                    }`}
+                    title="When enabled, typing a letter automatically skips over boxes that are already filled"
+                  >
+                    <FastForward className="w-3.5 h-3.5" />
+                    <span>
+                      Skip Filled: {skipFilledCells ? 'ON' : 'OFF'}
+                    </span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  {/* Mobile Zoom Toggle for 20x20 Grid */}
+                  {gridSize === 20 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundFX.playClick();
+                        setMobileGridZoomed((z) => !z);
+                      }}
+                      className={`sm:hidden px-2.5 py-1.5 rounded-lg border ${
+                        mobileGridZoomed
+                          ? `${theme.accentBorder} ${theme.bgElevated}`
+                          : `${theme.borderSubtle} ${theme.bgCanvas}`
+                      } text-xs font-medium flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0`}
+                      title="Toggle 20×20 grid zoom on mobile screens"
+                    >
+                      {mobileGridZoomed ? (
+                        <>
+                          <ZoomOut className="w-3.5 h-3.5" />
+                          <span>Fit</span>
+                        </>
+                      ) : (
+                        <>
+                          <ZoomIn className="w-3.5 h-3.5" />
+                          <span>Zoom</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+
+                  {/* Use Device's Own Keyboard Button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundFX.playClick();
+                      focusNativeKeyboard();
+                    }}
+                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+                      isNativeKeyboardFocused
+                        ? `${theme.accentBg} ${theme.accentText}`
+                        : `${theme.borderSubtle} ${theme.bgElevated} ${theme.textPrimary}`
+                    }`}
+                    title="Open your device's native keyboard to type directly into the crossword"
+                  >
+                    <Keyboard className="w-3.5 h-3.5" />
+                    <span>
+                      {isNativeKeyboardFocused
+                        ? 'Keyboard Active'
+                        : 'Own Keyboard'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Interactive Crossword Board (20x20 Standard or 8x8 Quick) with Solid Black Crossword Background & 100% Boxes */}
+            <div
+              ref={gridContainerRef}
+              className={`relative w-[calc(100%-20px)] ${
+                mobileGridZoomed && gridSize === 20
+                  ? 'overflow-auto max-h-[72vh]'
+                  : 'aspect-square overflow-hidden'
+              } p-1.5 sm:p-2 rounded-xl border ${theme.borderSubtle} bg-black shadow-sm flex items-center justify-center`}
+            >
+              {/* Hidden Native OS Keyboard Input for Mobile (iOS / Android) & Touch Devices */}
+              <input
+                ref={mobileKeyboardInputRef}
+                type="text"
+                inputMode="text"
+                enterKeyHint="next"
+                autoCapitalize="characters"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                aria-label="Crossword grid native keyboard input"
+                value=" "
+                onChange={handleMobileInputChange}
+                onKeyDown={handleMobileInputKeyDown}
+                onFocus={() => setIsNativeKeyboardFocused(true)}
+                onBlur={() => setIsNativeKeyboardFocused(false)}
+                className="fixed top-1/3 left-1/2 -translate-x-1/2 w-1 h-1 opacity-0 pointer-events-none"
+              />
+
+              {/* Solid Black Crossword Background */}
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 crossword-board-bg"
+              />
+
+              <div
+                className={`relative z-10 ${
+                  mobileGridZoomed && gridSize === 20
+                    ? 'w-[560px] h-[560px] shrink-0'
+                    : 'w-full h-full'
+                } grid border ${theme.borderSubtle}`}
+                style={{
+                  gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
+                  gridTemplateRows: `repeat(${gridSize}, minmax(0, 1fr))`,
+                }}
+                role="grid"
+                aria-label={`${gridSize} by ${gridSize} Crossword Grid`}
+              >
+                {activePuzzle.grid.map((rowArr, rIdx) =>
+                  rowArr.map((cell, cIdx) => {
+                    if (cell.isBlocked) {
+                      return (
+                        <div
+                          key={`${rIdx}-${cIdx}`}
+                          className="relative w-full h-full bg-black border-[0.5px] border-black/25 overflow-hidden"
+                          role="gridcell"
+                          aria-disabled="true"
+                        />
+                      );
+                    }
+
+                    const cellKey = `${rIdx},${cIdx}`;
+                    const isFocused =
+                      focusedCell.row === rIdx && focusedCell.col === cIdx;
+                    const isInActiveWord = activeWordCells.has(cellKey);
+                    const isRevealed = revealedCells.has(cellKey);
+                    const hasError = errorCells.has(cellKey);
+                    const val = userGrid[rIdx]?.[cIdx] || '';
+
+                    let bgClass = theme.gridCellBg;
+                    let textClass = theme.gridCellText;
+                    if (isFocused) {
+                      bgClass = theme.gridCellFocused;
+                      textClass = theme.gridCellFocusedText;
+                    } else if (isInActiveWord) {
+                      bgClass = theme.gridCellActiveWord;
+                    }
+
+                    return (
+                      <button
+                        key={`${rIdx}-${cIdx}`}
+                        type="button"
+                        role="gridcell"
+                        aria-label={`Row ${rIdx + 1} Column ${cIdx + 1}${
+                          cell.number ? `, Clue ${cell.number}` : ''
+                        }${val ? `, Letter ${val}` : ', Empty'}`}
+                        onClick={() => {
+                          soundFX.playClick();
+                          if (
+                            focusedCell.row === rIdx &&
+                            focusedCell.col === cIdx
+                          ) {
+                            if (cell.acrossClueId && cell.downClueId) {
+                              setDirection((prev) =>
+                                prev === 'across' ? 'down' : 'across'
+                              );
+                            }
+                          } else {
+                            setFocusedCell({ row: rIdx, col: cIdx });
+                          }
+                          // Focus native mobile keyboard synchronously on cell tap
+                          focusNativeKeyboard();
+                        }}
+                        className={`relative w-full h-full ${bgClass} ${textClass} border-[0.5px] border-slate-500/35 flex items-center justify-center font-mono-tabular font-bold transition-colors duration-75 focus:outline-none cursor-pointer overflow-hidden touch-manipulation`}
+                      >
+                        {cell.number !== undefined && (
+                          <span
+                            className={`pointer-events-none absolute z-10 ${
+                              gridSize === 8
+                                ? 'top-[2px] left-[4px] text-[10px] sm:text-xs'
+                                : 'top-[1px] left-[1.5px] text-[7px] sm:text-[9px]'
+                            } leading-none font-mono-tabular font-semibold ${
+                              isFocused ? 'opacity-95' : 'opacity-80'
+                            }`}
+                          >
+                            {cell.number}
+                          </span>
+                        )}
+
+                        {isRevealed && (
+                          <span
+                            className="pointer-events-none absolute z-10 top-0 right-0 w-0 h-0 border-t-[6px] border-t-emerald-500 border-l-[6px] border-l-transparent"
+                            title="Anchor letter revealed"
+                          />
+                        )}
+
+                        {hasError && (
+                          <span
+                            className="pointer-events-none absolute z-10 inset-0 border-b-2 border-red-500 rotate-45 scale-125"
+                            aria-hidden="true"
+                          />
+                        )}
+
+                        <span
+                          className={`relative z-10 ${
+                            gridSize === 8
+                              ? 'text-lg sm:text-xl md:text-2xl leading-none pt-1.5'
+                              : 'text-[11px] sm:text-sm md:text-[15px] leading-none pt-1'
+                          }`}
+                        >
+                          {val}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Compact On-Screen Keyboard Strip for Touch / Mouse Input (with option to hide when using device keyboard) */}
+            <div className="w-[calc(100%-20px)] mt-2.5">
+              <div className="flex items-center justify-between mb-1.5 px-1">
+                <span className={`text-[11px] ${theme.textMuted}`}>
+                  Tap any grid box to use your own keyboard, or tap keys below:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowOnScreenKeys((s) => !s)}
+                  className={`text-[11px] font-semibold ${theme.textSecondary} hover:underline cursor-pointer`}
+                >
+                  {showOnScreenKeys ? 'Hide On-Screen Keys' : 'Show On-Screen Keys'}
+                </button>
+              </div>
+
+              {showOnScreenKeys && (
+                <div className="flex flex-wrap items-center justify-center gap-1">
+                  {'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((letter) => (
+                    <button
+                      key={letter}
+                      type="button"
+                      onClick={() => handleLetterInput(letter)}
+                      className={`w-7 h-8 sm:w-8 sm:h-8 rounded border ${theme.borderSubtle} ${theme.bgSurface} ${theme.textPrimary} font-mono-tabular text-xs font-bold hover:opacity-85 active:scale-95 transition-transform cursor-pointer touch-manipulation`}
+                    >
+                      {letter}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={handleBackspace}
+                    className={`px-2.5 h-8 rounded border ${theme.borderSubtle} ${theme.bgElevated} ${theme.textPrimary} font-mono-tabular text-xs font-semibold hover:opacity-85 cursor-pointer whitespace-nowrap shrink-0 touch-manipulation`}
+                  >
+                    ⌫ Back
+                  </button>
                 </div>
               )}
-            </form>
+            </div>
+          </div>
 
-            {/* Footer Controls */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              <div className="flex items-center gap-2">
+          {/* Right Column (5 cols on XL): 4-Tier Hint System + Clue Difficulty Selector + Across/Down Lists */}
+          <div className="xl:col-span-5 flex flex-col gap-4 w-full">
+            {/* 4-Tier User-Friendly Hint System Card */}
+            <section
+              className={`p-4 rounded-xl border ${theme.borderSubtle} ${theme.bgSurface}`}
+              aria-label="Multi-tier hint system"
+            >
+              <div className="flex items-center justify-between gap-2 mb-2.5">
+                <div className="flex items-center gap-2">
+                  <Lightbulb className="w-4 h-4 text-amber-500" />
+                  <h2 className="text-sm font-bold tracking-tight">
+                    4-Tier Cruciverbalist Hint System
+                  </h2>
+                </div>
+                <span className={`text-xs ${theme.textMuted} font-mono-tabular`}>
+                  Hints Used: {hintsUsed}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <button
+                  type="button"
+                  onClick={handleHintTier1Breakdown}
+                  className={`p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-90 text-left transition-opacity cursor-pointer flex flex-col justify-between`}
+                >
+                  <div className="flex items-center justify-between text-xs font-semibold mb-1">
+                    <span>1. Wordplay</span>
+                    <BookOpen className="w-3.5 h-3.5 opacity-70" />
+                  </div>
+                  <div className={`text-[11px] ${theme.textMuted} leading-tight`}>
+                    Cryptic &amp; context guide
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleHintTier2AnchorLetter}
+                  className={`p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-90 text-left transition-opacity cursor-pointer flex flex-col justify-between`}
+                >
+                  <div className="flex items-center justify-between text-xs font-semibold mb-1">
+                    <span>2. Letter</span>
+                    <Sparkles className="w-3.5 h-3.5 opacity-70" />
+                  </div>
+                  <div className={`text-[11px] ${theme.textMuted} leading-tight`}>
+                    Reveal next letter
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleHintTier3CheckWord}
+                  className={`p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-90 text-left transition-opacity cursor-pointer flex flex-col justify-between`}
+                >
+                  <div className="flex items-center justify-between text-xs font-semibold mb-1">
+                    <span>3. Verify</span>
+                    <CheckCircle2 className="w-3.5 h-3.5 opacity-70" />
+                  </div>
+                  <div className={`text-[11px] ${theme.textMuted} leading-tight`}>
+                    Check active word
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleHintTier4RevealWord}
+                  className={`p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-90 text-left transition-opacity cursor-pointer flex flex-col justify-between`}
+                >
+                  <div className="flex items-center justify-between text-xs font-semibold mb-1">
+                    <span>4. Solve</span>
+                    <Eye className="w-3.5 h-3.5 opacity-70" />
+                  </div>
+                  <div className={`text-[11px] ${theme.textMuted} leading-tight`}>
+                    Reveal full entry
+                  </div>
+                </button>
+              </div>
+
+              {hintBannerMessage && (
+                <div
+                  className={`mt-3 p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgElevated} text-xs leading-relaxed`}
+                >
+                  {hintBannerMessage}
+                </div>
+              )}
+            </section>
+
+            {/* Clue Difficulty Selector & Clue List Card */}
+            <section
+              className={`p-4 rounded-xl border ${theme.borderSubtle} ${theme.bgSurface} flex flex-col gap-3`}
+            >
+              {/* Clue Difficulty Selector with Easiest Base Lock Explanation */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-bold">
+                    Clue Difficulty · Easiest Base Today:{' '}
+                    <span className="uppercase font-mono-tabular">
+                      {easiestBaseForActivePuzzle} (
+                      {stats.score.toLocaleString()} pts)
+                    </span>
+                  </div>
+                  <div className={`text-[11px] ${theme.textMuted}`}>
+                    Selecting an easier tier sets your fixed score base for this
+                    puzzle.
+                  </div>
+                </div>
+                <div
+                  className={`flex items-center gap-1 p-1 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas}`}
+                >
+                  {(
+                    [
+                      { id: 'easy', label: 'Easy (1,000)' },
+                      { id: 'medium', label: 'Med (2,000)' },
+                      { id: 'hard', label: 'Hard (3,000)' },
+                    ] as const
+                  ).map((mode) => (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() =>
+                        handleChangeClueDifficulty(mode.id, activePuzzle.id)
+                      }
+                      className={`px-2.5 py-1 rounded text-xs font-mono-tabular font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                        clueDifficulty === mode.id
+                          ? `${theme.accentBg} ${theme.accentText}`
+                          : `${theme.textSecondary} hover:${theme.textPrimary}`
+                      }`}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Filter Clue List by keyword or clue number */}
+              <div className="pt-2 border-t border-slate-500/15">
+                <input
+                  type="text"
+                  value={clueSearchQuery}
+                  onChange={(e) => setClueSearchQuery(e.target.value)}
+                  placeholder="Filter clues by number or text..."
+                  className={`w-full px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} text-xs focus:outline-none`}
+                />
+              </div>
+
+              {/* Dual Scrollable Clue Columns: Across & Down */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                {/* Across Column */}
+                <div className="flex flex-col">
+                  <div
+                    className={`pb-2 mb-2 border-b ${theme.borderSubtle} flex items-center justify-between`}
+                  >
+                    <h3 className="text-sm font-bold font-display">Across</h3>
+                    <span
+                      className={`text-xs ${theme.textMuted} font-mono-tabular`}
+                    >
+                      {filteredAcross.length} Clues
+                    </span>
+                  </div>
+                  <div className="h-[260px] sm:h-[340px] overflow-y-auto pr-1 space-y-1.5 clue-scroll">
+                    {filteredAcross.map((clue) => {
+                      const isCurrent = activeClue?.id === clue.id;
+                      const isDone = completedClueIds.has(clue.id);
+                      return (
+                        <button
+                          key={clue.id}
+                          type="button"
+                          onClick={() => {
+                            soundFX.playClick();
+                            setDirection('across');
+                            setFocusedCell(
+                              getTargetCellForClue(
+                                clue,
+                                userGrid,
+                                skipFilledCells
+                              )
+                            );
+                            focusNativeKeyboard();
+                          }}
+                          className={`w-full text-left p-2.5 rounded-lg border transition-colors cursor-pointer ${
+                            isCurrent
+                              ? `${theme.accentBorder} ${theme.bgElevated}`
+                              : `${theme.borderSubtle} hover:opacity-90`
+                          } ${isDone ? 'opacity-60' : ''}`}
+                        >
+                          <div className="flex items-center justify-between text-[11px] mb-0.5">
+                            <span className="font-mono-tabular font-bold">
+                              {clue.number}. ({clue.length})
+                            </span>
+                            <span className={`${theme.textMuted} capitalize`}>
+                              {clueDifficulty}
+                              {isDone ? ' · Solved' : ''}
+                            </span>
+                          </div>
+                          <div
+                            className={`text-xs leading-snug ${
+                              isDone ? 'line-through' : ''
+                            }`}
+                          >
+                            {getClueTextForDifficulty(clue)}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Down Column */}
+                <div className="flex flex-col">
+                  <div
+                    className={`pb-2 mb-2 border-b ${theme.borderSubtle} flex items-center justify-between`}
+                  >
+                    <h3 className="text-sm font-bold font-display">Down</h3>
+                    <span
+                      className={`text-xs ${theme.textMuted} font-mono-tabular`}
+                    >
+                      {filteredDown.length} Clues
+                    </span>
+                  </div>
+                  <div className="h-[260px] sm:h-[340px] overflow-y-auto pr-1 space-y-1.5 clue-scroll">
+                    {filteredDown.map((clue) => {
+                      const isCurrent = activeClue?.id === clue.id;
+                      const isDone = completedClueIds.has(clue.id);
+                      return (
+                        <button
+                          key={clue.id}
+                          type="button"
+                          onClick={() => {
+                            soundFX.playClick();
+                            setDirection('down');
+                            setFocusedCell(
+                              getTargetCellForClue(
+                                clue,
+                                userGrid,
+                                skipFilledCells
+                              )
+                            );
+                            focusNativeKeyboard();
+                          }}
+                          className={`w-full text-left p-2.5 rounded-lg border transition-colors cursor-pointer ${
+                            isCurrent
+                              ? `${theme.accentBorder} ${theme.bgElevated}`
+                              : `${theme.borderSubtle} hover:opacity-90`
+                          } ${isDone ? 'opacity-60' : ''}`}
+                        >
+                          <div className="flex items-center justify-between text-[11px] mb-0.5">
+                            <span className="font-mono-tabular font-bold">
+                              {clue.number}. ({clue.length})
+                            </span>
+                            <span className={`${theme.textMuted} capitalize`}>
+                              {clueDifficulty}
+                              {isDone ? ' · Solved' : ''}
+                            </span>
+                          </div>
+                          <div
+                            className={`text-xs leading-snug ${
+                              isDone ? 'line-through' : ''
+                            }`}
+                          >
+                            {getClueTextForDifficulty(clue)}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </main>
+
+        {/* Pause Modal */}
+        {gameState === 'PAUSED' && (
+          <div
+            className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/70"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pause-modal-title"
+          >
+            <div
+              className={`relative w-full max-w-md p-6 pt-8 rounded-2xl border ${theme.borderSubtle} ${theme.bgSurface} ${theme.textPrimary} text-center space-y-5 shadow-xl`}
+            >
+              {/* Top-Right Close Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  soundFX.playClick();
+                  setGameState('PLAYING');
+                }}
+                aria-label="Close pause popup"
+                title="Close and resume solving"
+                className={`absolute top-4 right-4 p-2 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-80 transition-opacity cursor-pointer z-10`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+
+              <h2
+                id="pause-modal-title"
+                className="text-2xl font-bold font-display"
+              >
+                Puzzle Paused
+              </h2>
+              <p className={`text-sm ${theme.textSecondary}`}>
+                {activePuzzle.title} ({activePuzzle.archiveDate}) ·{' '}
+                {stats.progressPercent}% Completed
+              </p>
+              <div className="flex flex-col gap-2.5">
                 <button
                   type="button"
                   onClick={() => {
                     soundFX.playClick();
-                    setIsLeaderboardOpen(true);
+                    setGameState('PLAYING');
                   }}
-                  className={`px-3.5 py-2.5 rounded-xl border ${theme.borderSubtle} ${theme.bgElevated} text-xs font-semibold flex items-center gap-1.5 cursor-pointer`}
+                  className={`w-full py-3 rounded-xl font-semibold text-sm ${theme.accentBg} ${theme.accentText} cursor-pointer`}
                 >
-                  <Trophy className="w-4 h-4" />
-                  <span>Scoreboard</span>
+                  Resume Solving
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    soundFX.playVictory();
-                    triggerVictoryConfetti();
+                    soundFX.playClick();
+                    setIsArchiveOpen(true);
                   }}
-                  className={`px-3.5 py-2.5 rounded-xl border ${theme.borderSubtle} ${theme.bgElevated} text-xs font-semibold flex items-center gap-1.5 cursor-pointer`}
+                  className={`w-full py-2.5 rounded-xl font-medium text-xs border ${theme.borderSubtle} ${theme.bgElevated} flex items-center justify-center gap-2 cursor-pointer`}
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Celebrate</span>
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span>Browse Past Daily Archive (20×20 &amp; 8×8)</span>
                 </button>
-              </div>
-
-              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -2340,76 +2750,309 @@ export default function App() {
                     initializeBoardForPuzzle(activePuzzle);
                     setGameState('PLAYING');
                   }}
-                  className={`px-4 py-2.5 rounded-xl ${theme.accentBg} ${theme.accentText} text-xs font-semibold cursor-pointer`}
+                  className={`w-full py-2.5 rounded-xl font-medium text-xs border ${theme.borderSubtle} ${theme.bgElevated} flex items-center justify-center gap-2 cursor-pointer`}
                 >
-                  Play Again
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>
+                    Reset {gridSize}×{gridSize} Grid
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundFX.playClick();
+                    setGameState('TITLE_MENU');
+                  }}
+                  className={`w-full py-2.5 rounded-xl font-medium text-xs border ${theme.borderSubtle} hover:opacity-85 cursor-pointer`}
+                >
+                  Return to Title Screen
                 </button>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Daily Archive Browser Modal */}
-      <ArchiveModal
-        isOpen={isArchiveOpen}
-        onClose={() => setIsArchiveOpen(false)}
-        puzzles={puzzles}
-        selectedPuzzleId={selectedPuzzleId}
-        visualThemeId={visualThemeId}
-        clueDifficulty={clueDifficulty}
-        easiestBaseByPuzzle={easiestBaseByPuzzle}
-        onChangeClueDifficulty={(diff) =>
-          handleChangeClueDifficulty(diff, activePuzzle.id)
-        }
-        leaderboard={leaderboard}
-        onSelectAndPlayPuzzle={handleSelectAndPlayArchivePuzzle}
-        londonCountdown={londonClock.countdownToMidnight}
-      />
+        {/* Victory / Puzzle Solved End Game Popup */}
+        {gameState === 'VICTORY' && !isVictoryPopupDismissed && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="victory-modal-title"
+          >
+            <div
+              className={`relative w-full max-w-lg p-7 rounded-2xl border ${theme.borderSubtle} ${theme.bgSurface} ${theme.textPrimary} space-y-6 shadow-2xl overflow-hidden`}
+            >
+              {/* Top-Right Close Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  soundFX.playClick();
+                  setIsVictoryPopupDismissed(true);
+                }}
+                aria-label="Close end game popup"
+                title="Close popup and view solved grid"
+                className={`absolute top-4 right-4 p-2 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-80 transition-opacity cursor-pointer z-10`}
+              >
+                <X className="w-4 h-4" />
+              </button>
 
-      {/* Permanent Cloud & Local Leaderboard Modal */}
-      <LeaderboardModal
-        isOpen={isLeaderboardOpen}
-        onClose={() => setIsLeaderboardOpen(false)}
-        entries={leaderboard}
-        puzzles={puzzles}
-        visualThemeId={visualThemeId}
-        currentUser={currentUser}
-        playerProfile={playerProfile}
-        onOpenAuthModal={() => {
-          setIsLeaderboardOpen(false);
-          setIsAuthModalOpen(true);
-        }}
-        activeSessionStats={{
-          puzzleId: activePuzzle.id,
-          puzzleTitle: activePuzzle.title,
-          themeName: activePuzzle.themeName,
-          gridSize: activePuzzle.gridSize,
-          score: stats.score,
-          timeSeconds: elapsedSeconds,
-          hintsUsed,
-          easiestDifficultyUsed: easiestBaseForActivePuzzle,
-          clueDifficulty,
-          accuracy: stats.accuracy,
-          progressPercent: stats.progressPercent,
-        }}
-        onRecordCurrentScore={handleRecordScore}
-      />
+              {/* Animated Celebration Header */}
+              <div className="text-center space-y-2 relative">
+                <div className="inline-flex items-center justify-center relative">
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-0 rounded-full bg-amber-400/25 animate-ping"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundFX.playVictory();
+                      triggerVictoryConfetti();
+                    }}
+                    title="Replay celebratory confetti"
+                    className="relative inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-amber-500/20 text-amber-400 mb-1 hover:bg-amber-500/30 transition-colors cursor-pointer"
+                  >
+                    <Trophy className="w-7 h-7 animate-bounce" />
+                    <Sparkles className="w-4 h-4" />
+                  </button>
+                </div>
+                <h2
+                  id="victory-modal-title"
+                  className="text-3xl font-bold font-display"
+                >
+                  Puzzle Solved!
+                </h2>
+                <p className={`text-sm ${theme.textSecondary}`}>
+                  {activePuzzle.title} · {activePuzzle.archiveDate} ·{' '}
+                  {activePuzzle.themeName}
+                </p>
+              </div>
 
-      {/* Player Account Registration & Login Modal */}
-      <PlayerAuthModal
-        isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
-        visualThemeId={visualThemeId}
-        currentUser={currentUser}
-        playerProfile={playerProfile}
-        authLoading={authLoading}
-        authError={authError}
-        onSignInWithGoogle={handleSignInWithGoogle}
-        onSignOut={handleSignOut}
-        onUpdateDisplayName={handleUpdateDisplayName}
-        leaderboard={leaderboard}
-      />
+              {/* Key Summary: User Name, Time Taken, Points Scored */}
+              <div
+                className={`p-4 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} space-y-3`}
+              >
+                <div className="grid grid-cols-3 gap-3 text-center font-mono-tabular">
+                  <div className="px-2">
+                    <div className={`text-xs ${theme.textMuted}`}>
+                      USER NAME
+                    </div>
+                    <div
+                      className="text-base sm:text-lg font-bold mt-1 truncate font-sans"
+                      title={
+                        playerProfile?.displayName ||
+                        currentUser?.displayName ||
+                        victoryPlayerName ||
+                        'Guest Solver'
+                      }
+                    >
+                      {playerProfile?.displayName ||
+                        currentUser?.displayName ||
+                        victoryPlayerName ||
+                        'Guest Solver'}
+                    </div>
+                  </div>
+                  <div className={`px-2 border-x ${theme.borderSubtle}`}>
+                    <div className={`text-xs ${theme.textMuted}`}>
+                      TIME TAKEN
+                    </div>
+                    <div className="text-xl font-bold mt-0.5">
+                      {formatDuration(elapsedSeconds)}
+                    </div>
+                  </div>
+                  <div className="px-2">
+                    <div className={`text-xs ${theme.textMuted}`}>
+                      POINTS SCORED
+                    </div>
+                    <div className="text-xl font-bold mt-0.5 text-amber-500">
+                      {stats.score.toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Transparent Scoring Breakdown (-25 pts per 60s taken) */}
+                <div
+                  className={`pt-2.5 border-t ${theme.borderSubtle} flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs font-mono-tabular ${theme.textSecondary}`}
+                >
+                  <span>
+                    Base ({easiestBaseForActivePuzzle}):{' '}
+                    <strong>{stats.baseScore.toLocaleString()} pts</strong>
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    Time Penalty:{' '}
+                    <strong>
+                      −{stats.timePenalty.toLocaleString()} pts
+                    </strong>{' '}
+                    ({Math.floor(elapsedSeconds / 60)} × 60s @ −25 pts/60s)
+                  </span>
+                </div>
+              </div>
+
+              {/* Player Name Customization & Cloud Sync Status */}
+              <form onSubmit={handleVictorySubmit} className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-semibold">
+                    {currentUser || playerProfile
+                      ? 'Verified Player Name on Scoreboard'
+                      : 'Player Name on Scoreboard'}
+                  </label>
+                  {!(currentUser || playerProfile) && (
+                    <button
+                      type="button"
+                      onClick={() => setIsAuthModalOpen(true)}
+                      className="text-xs font-semibold text-emerald-500 underline cursor-pointer"
+                    >
+                      Register / Sign In (Email or Google) →
+                    </button>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    required
+                    maxLength={40}
+                    value={victoryPlayerName}
+                    onChange={(e) => setVictoryPlayerName(e.target.value)}
+                    placeholder="Your name or callsign..."
+                    className={`flex-1 px-3.5 py-2 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} text-sm focus:outline-none`}
+                  />
+                  <button
+                    type="submit"
+                    className={`px-4 py-2 rounded-xl font-semibold text-xs ${theme.accentBg} ${theme.accentText} whitespace-nowrap shrink-0 cursor-pointer`}
+                  >
+                    Update Name
+                  </button>
+                </div>
+                {victorySubmitted && (
+                  <div
+                    className={`p-2.5 rounded-xl border ${theme.borderSubtle} ${theme.bgElevated} text-center text-xs font-semibold flex items-center justify-center gap-2`}
+                  >
+                    <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>
+                      {stats.score.toLocaleString()} pts recorded for{' '}
+                      <strong>
+                        {playerProfile?.displayName ||
+                          currentUser?.displayName ||
+                          victoryPlayerName}
+                      </strong>{' '}
+                      in {formatDuration(elapsedSeconds)}!
+                    </span>
+                  </div>
+                )}
+              </form>
+
+              {/* Footer Controls */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundFX.playClick();
+                      setIsLeaderboardOpen(true);
+                    }}
+                    className={`px-3.5 py-2.5 rounded-xl border ${theme.borderSubtle} ${theme.bgElevated} text-xs font-semibold flex items-center gap-1.5 cursor-pointer`}
+                  >
+                    <Trophy className="w-4 h-4" />
+                    <span>Scoreboard</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundFX.playVictory();
+                      triggerVictoryConfetti();
+                    }}
+                    className={`px-3.5 py-2.5 rounded-xl border ${theme.borderSubtle} ${theme.bgElevated} text-xs font-semibold flex items-center gap-1.5 cursor-pointer`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Celebrate</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundFX.playClick();
+                      initializeBoardForPuzzle(activePuzzle);
+                      setGameState('PLAYING');
+                    }}
+                    className={`px-4 py-2.5 rounded-xl ${theme.accentBg} ${theme.accentText} text-xs font-semibold cursor-pointer`}
+                  >
+                    Play Again
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Daily Archive Browser Modal */}
+        <ArchiveModal
+          isOpen={isArchiveOpen}
+          onClose={() => setIsArchiveOpen(false)}
+          puzzles={puzzles}
+          selectedPuzzleId={selectedPuzzleId}
+          visualThemeId={visualThemeId}
+          clueDifficulty={clueDifficulty}
+          easiestBaseByPuzzle={easiestBaseByPuzzle}
+          onChangeClueDifficulty={(diff) =>
+            handleChangeClueDifficulty(diff, activePuzzle.id)
+          }
+          leaderboard={leaderboard}
+          onSelectAndPlayPuzzle={handleSelectAndPlayArchivePuzzle}
+          londonCountdown={londonClock.countdownToMidnight}
+        />
+
+        {/* Permanent Cloud & Local Leaderboard Modal */}
+        <LeaderboardModal
+          isOpen={isLeaderboardOpen}
+          onClose={() => setIsLeaderboardOpen(false)}
+          entries={leaderboard}
+          puzzles={puzzles}
+          visualThemeId={visualThemeId}
+          currentUser={currentUser}
+          playerProfile={playerProfile}
+          onOpenAuthModal={() => {
+            setIsLeaderboardOpen(false);
+            setIsAuthModalOpen(true);
+          }}
+          activeSessionStats={{
+            puzzleId: activePuzzle.id,
+            puzzleTitle: activePuzzle.title,
+            themeName: activePuzzle.themeName,
+            gridSize: activePuzzle.gridSize,
+            score: stats.score,
+            timeSeconds: elapsedSeconds,
+            hintsUsed,
+            easiestDifficultyUsed: easiestBaseForActivePuzzle,
+            clueDifficulty,
+            accuracy: stats.accuracy,
+            progressPercent: stats.progressPercent,
+          }}
+          onRecordCurrentScore={handleRecordScore}
+        />
+
+        {/* Player Account Registration & Login Modal */}
+        <PlayerAuthModal
+          isOpen={isAuthModalOpen}
+          onClose={() => setIsAuthModalOpen(false)}
+          visualThemeId={visualThemeId}
+          currentUser={currentUser}
+          playerProfile={playerProfile}
+          authLoading={authLoading}
+          authError={authError}
+          authErrorDetails={authErrorDetails}
+          onSignInWithGoogle={handleSignInWithGoogle}
+          onRegisterWithEmail={handleRegisterWithEmail}
+          onSignInWithEmail={handleSignInWithEmail}
+          onResetPassword={handleResetPassword}
+          onActivateDeviceAccount={handleActivateDeviceAccount}
+          onSignOut={handleSignOut}
+          onUpdateDisplayName={handleUpdateDisplayName}
+          leaderboard={leaderboard}
+        />
       </div>
     </div>
   );
