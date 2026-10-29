@@ -225,18 +225,17 @@ service cloud.firestore {
       allow update: if (
         isVerifiedUser() &&
         isValidId(userId) &&
-        isValidUserPublicProfile(incoming()) &&
         userId == request.auth.uid &&
         existing().uid == request.auth.uid &&
-        incoming().uid == existing().uid &&
-        incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
         (
-          // Action 1: Update display handle or avatar
           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt']) ||
-          // Action 2: Increment career solved count and total score
           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'puzzlesSolved', 'totalScore', 'updatedAt'])
-        )
+        ) &&
+        (!incoming().keys().hasAny(['displayName']) || (incoming().displayName is string && incoming().displayName.size() >= 1 && incoming().displayName.size() <= 40)) &&
+        (!incoming().keys().hasAny(['photoURL']) || (incoming().photoURL is string && incoming().photoURL.size() >= 0 && incoming().photoURL.size() <= 500)) &&
+        (!incoming().keys().hasAny(['puzzlesSolved']) || (incoming().puzzlesSolved is int && incoming().puzzlesSolved >= 0 && incoming().puzzlesSolved <= 100000)) &&
+        (!incoming().keys().hasAny(['totalScore']) || (incoming().totalScore is int && incoming().totalScore >= 0 && incoming().totalScore <= 300000000))
       );
 
       allow delete: if false;
@@ -272,11 +271,8 @@ service cloud.firestore {
           isVerifiedUser() &&
           isValidId(userId) &&
           isValidId(puzzleId) &&
-          isValidPlayerPuzzleProgress(incoming()) &&
           request.auth.uid == userId &&
           existing().uid == request.auth.uid &&
-          incoming().uid == existing().uid &&
-          incoming().puzzleId == existing().puzzleId &&
           isValidDifficultyTransition(existing().easiestDifficultyUsed, incoming().easiestDifficultyUsed) &&
           incoming().updatedAt == request.time &&
           incoming().diff(existing()).affectedKeys().hasOnly([
@@ -284,6 +280,8 @@ service cloud.firestore {
             'completed',
             'updatedAt'
           ]) &&
+          (incoming().easiestDifficultyUsed == 'easy' || incoming().easiestDifficultyUsed == 'medium' || incoming().easiestDifficultyUsed == 'hard') &&
+          (incoming().completed is bool) &&
           exists(/databases/$(database)/documents/users/$(userId))
         );
 
@@ -309,15 +307,7 @@ service cloud.firestore {
       allow update: if (
         isVerifiedUser() &&
         isValidId(scoreId) &&
-        isValidLeaderboardScore(incoming()) &&
         existing().uid == request.auth.uid &&
-        incoming().uid == existing().uid &&
-        incoming().scoreId == existing().scoreId &&
-        incoming().puzzleId == existing().puzzleId &&
-        incoming().gridSize == existing().gridSize &&
-        isValidDifficultyTransition(existing().easiestDifficultyUsed, incoming().easiestDifficultyUsed) &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
         incoming().diff(existing()).affectedKeys().hasOnly([
           'playerName',
           'score',
@@ -329,6 +319,12 @@ service cloud.firestore {
           'completedAt',
           'updatedAt'
         ]) &&
+        isValidDifficultyTransition(existing().easiestDifficultyUsed, incoming().easiestDifficultyUsed) &&
+        incoming().updatedAt == request.time &&
+        incoming().score is int &&
+        incoming().score >= 0 &&
+        incoming().easiestDifficultyUsed is string &&
+        (incoming().easiestDifficultyUsed == 'easy' || incoming().easiestDifficultyUsed == 'medium' || incoming().easiestDifficultyUsed == 'hard') &&
         exists(/databases/$(database)/documents/users/$(incoming().uid))
       );
 

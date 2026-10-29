@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { User } from 'firebase/auth';
 import {
   ClueDifficulty,
-  FIXED_DIFFICULTY_SCORES,
+  LETTER_POINTS_PER_DIFFICULTY,
   GridSizeOption,
   LeaderboardEntry,
   PlayerProfile,
@@ -51,6 +51,7 @@ interface TitleScreenProps {
   onToggleMute: () => void;
   topScores: LeaderboardEntry[];
   londonCountdown: string;
+  onOpenAdminModal: () => void;
 }
 
 export const TitleScreen: React.FC<TitleScreenProps> = ({
@@ -74,6 +75,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   onToggleMute,
   topScores,
   londonCountdown,
+  onOpenAdminModal,
 }) => {
   const theme: VisualTheme = VISUAL_THEMES[visualThemeId];
   const selectedPuzzle =
@@ -125,7 +127,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
     matchingSizePuzzles.length > 0 ? matchingSizePuzzles : puzzles
   ).slice(0, 4);
 
-  const lockedFixedScore = FIXED_DIFFICULTY_SCORES[easiestBaseForSelected];
+  const lockedPointsPerLetter = LETTER_POINTS_PER_DIFFICULTY[easiestBaseForSelected];
 
   return (
     <div
@@ -556,8 +558,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                   ·
                 </span>
                 <span>
-                  Fixed Base: {lockedFixedScore.toLocaleString()} pts (
-                  {easiestBaseForSelected.toUpperCase()})
+                  Fixed Base: {lockedPointsPerLetter} pts/letter ({easiestBaseForSelected.toUpperCase()})
                 </span>
                 <span className="mx-1.5" aria-hidden="true">
                   ·
@@ -658,12 +659,11 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                 <span>01. Select Clue Difficulty Base</span>
               </h3>
               <span className={`text-xs ${theme.textMuted} font-mono-tabular`}>
-                Fixed Today: {lockedFixedScore.toLocaleString()} pts
+                {lockedPointsPerLetter} pts/letter
               </span>
             </div>
             <p className={`text-[11px] ${theme.textMuted} mb-2`}>
-              Your score for a puzzle is fixed to the easiest clue base you
-              select that day.
+              Your score per letter is fixed to the easiest clue base you select that day.
             </p>
             <div
               className={`grid grid-cols-3 gap-1.5 p-1 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas}`}
@@ -672,18 +672,18 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                 [
                   {
                     id: 'easy',
-                    label: 'Easy · 1,000',
-                    desc: 'Direct definitions',
+                    label: 'Easy · 10 pts/ltr',
+                    desc: 'Direct definitions (1x)',
                   },
                   {
                     id: 'medium',
-                    label: 'Medium · 2,000',
-                    desc: 'Clever wordplay',
+                    label: 'Med · 13 pts/ltr',
+                    desc: 'Wordplay (1.3x)',
                   },
                   {
                     id: 'hard',
-                    label: 'Hard · 3,000',
-                    desc: 'Complex cryptic',
+                    label: 'Hard · 15 pts/ltr',
+                    desc: 'Cryptic (1.5x)',
                   },
                 ] as const
               ).map((opt) => {
@@ -937,9 +937,18 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             Enter / Space Start Game · Arrows Navigate Grid · Tab Next Clue ·
             Space Switch Across/Down · Esc Pause
           </div>
-          <div className={`${theme.textMuted} font-mono-tabular`}>
-            Generates Daily at 00:00 London, UK · 20×20 Standard &amp; 8×8 Quick
-            Editions
+          <div className="flex items-center gap-3">
+            <span className={`${theme.textMuted} font-mono-tabular hidden sm:inline`}>
+              Generates Daily at 00:00 London, UK · 20×20 Standard &amp; 8×8 Quick
+            </span>
+            <button
+              type="button"
+              onClick={onOpenAdminModal}
+              className={`px-3 py-1 rounded-lg border ${theme.borderSubtle} ${theme.bgElevated} font-semibold flex items-center gap-1.5 hover:opacity-85 cursor-pointer`}
+              title="Admin & Settings Panel"
+            >
+              <span>⚙️ Admin</span>
+            </button>
           </div>
         </div>
       </div>

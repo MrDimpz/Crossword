@@ -207,6 +207,15 @@ export function addLeaderboardEntry(
   return updated;
 }
 
+export function resetLeaderboard(): LeaderboardEntry[] {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_LEADERBOARD));
+    return INITIAL_LEADERBOARD;
+  } catch {
+    return INITIAL_LEADERBOARD;
+  }
+}
+
 /**
  * Merges permanent Cloud Firestore leaderboard entries with local fallback entries, deduplicating by (puzzleId, playerName/uid).
  */

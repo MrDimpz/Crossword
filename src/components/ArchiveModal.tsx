@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import {
   ClueDifficulty,
-  FIXED_DIFFICULTY_SCORES,
+  LETTER_POINTS_PER_DIFFICULTY,
   LeaderboardEntry,
   PuzzleDefinition,
   VisualTheme,
@@ -460,7 +460,7 @@ export const ArchiveModal: React.FC<ArchiveModalProps> = ({
                           </span>
                           <span>
                             Base:{' '}
-                            {FIXED_DIFFICULTY_SCORES[lockedBase].toLocaleString()}{' '}
+                            {LETTER_POINTS_PER_DIFFICULTY[lockedBase].toLocaleString()}{' '}
                             pts ({lockedBase.toUpperCase()})
                           </span>
                         </div>

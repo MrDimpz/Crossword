@@ -4,17 +4,17 @@ export type ClueDifficulty = 'easy' | 'medium' | 'hard';
 
 export type GridSizeOption = 8 | 20;
 
-export const FIXED_DIFFICULTY_SCORES: Record<ClueDifficulty, number> = {
-  easy: 1000,
-  medium: 2000,
-  hard: 3000,
+export const LETTER_POINTS_PER_DIFFICULTY: Record<ClueDifficulty, number> = {
+  easy: 10,
+  medium: 13,
+  hard: 15,
 };
 
-export const TIME_PENALTY_PER_MINUTE = 25;
+export const TIME_PENALTY_PER_MINUTE = 10;
 export const TIME_PENALTY_INTERVAL_SECONDS = 60;
 
 /**
- * Removes 25 points for every 60 seconds elapsed.
+ * Removes 10 points for every 60 seconds elapsed.
  */
 export function calculateTimePenalty(timeSeconds: number): number {
   const safeSeconds = Math.max(0, Math.floor(timeSeconds || 0));
@@ -24,14 +24,13 @@ export function calculateTimePenalty(timeSeconds: number): number {
   );
 }
 
-/**
- * Calculates final puzzle score: easiest difficulty base minus 25 points for every 60 seconds taken (minimum 0).
- */
 export function calculatePuzzleScore(
   easiestDifficulty: ClueDifficulty,
-  timeSeconds: number
+  timeSeconds: number,
+  totalLetters: number = 50
 ): number {
-  const baseScore = FIXED_DIFFICULTY_SCORES[easiestDifficulty];
+  const pointsPerLetter = LETTER_POINTS_PER_DIFFICULTY[easiestDifficulty] || 10;
+  const baseScore = totalLetters * pointsPerLetter;
   const penalty = calculateTimePenalty(timeSeconds);
   return Math.max(0, baseScore - penalty);
 }

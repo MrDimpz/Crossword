@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
 import {
   ClueDifficulty,
-  FIXED_DIFFICULTY_SCORES,
+  LETTER_POINTS_PER_DIFFICULTY,
   LeaderboardEntry,
   PlayerProfile,
   PuzzleDefinition,
@@ -250,10 +250,10 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
                 </span>
                 <span className="font-mono-tabular capitalize">
                   Base: {activeSessionStats.easiestDifficultyUsed} (
-                  {FIXED_DIFFICULTY_SCORES[
+                  {LETTER_POINTS_PER_DIFFICULTY[
                     activeSessionStats.easiestDifficultyUsed
-                  ].toLocaleString()}
-                  )
+                  ]}{' '}
+                  pts/ltr)
                 </span>
                 <span className={`mx-1.5 ${theme.textMuted}`} aria-hidden="true">
                   ·

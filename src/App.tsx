@@ -11,7 +11,7 @@ import {
   calculateTimePenalty,
   ClueDifficulty,
   Direction,
-  FIXED_DIFFICULTY_SCORES,
+  LETTER_POINTS_PER_DIFFICULTY,
   GameState,
   getEasierDifficulty,
   GridSizeOption,
@@ -36,6 +36,7 @@ import {
   getStoredEasiestBaseMap,
   mergeCloudAndLocalLeaderboards,
   recordEasiestBaseForPuzzle,
+  resetLeaderboard,
 } from './utils/leaderboard';
 import {
   auth,
@@ -63,6 +64,7 @@ import { TitleScreen } from './components/TitleScreen';
 import { LeaderboardModal } from './components/LeaderboardModal';
 import { ArchiveModal } from './components/ArchiveModal';
 import { PlayerAuthModal } from './components/PlayerAuthModal';
+import { AdminPanelModal } from './components/AdminPanelModal';
 import {
   Lightbulb,
   CheckCircle2,
@@ -98,10 +100,23 @@ export default function App() {
   const [selectedPuzzleId, setSelectedPuzzleId] = useState<string>(
     CURATED_PUZZLES[0].id
   );
+  // Player Grid Values (sized dynamically to activePuzzle.gridSize: 20x20 or 8x8)
+  const [userGrid, setUserGrid] = useState<string[][]>(() =>
+    Array.from({ length: 20 }, () => Array.from({ length: 20 }, () => ''))
+  );
+
+  // Check if user has started solving by entering any letters
+  const hasUserStartedSolving = useMemo(() => {
+    return userGrid.some((row) => row.some((cell) => cell !== ''));
+  }, [userGrid]);
   const [visualThemeId, setVisualThemeId] =
     useState<VisualThemeId>('observatory');
   const [clueDifficulty, setClueDifficulty] =
     useState<ClueDifficulty>('medium');
+  // Track easiest difficulty viewed for each clue id
+  const [clueViewedDifficulties, setClueViewedDifficulties] = useState<
+    Record<string, ClueDifficulty>
+  >({});
 
   // Track 00:00 Europe/London date & live countdown
   const [londonClock, setLondonClock] = useState(() =>
@@ -230,6 +245,7 @@ export default function App() {
   const [isArchiveOpen, setIsArchiveOpen] = useState<boolean>(false);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState<boolean>(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
 
   // Audio state
   const [isMuted, setIsMuted] = useState<boolean>(() => soundFX.isMuted());
@@ -378,6 +394,13 @@ export default function App() {
   // Update difficulty and lock in the easiest base chosen for the active puzzle (both locally and in Cloud if signed in)
   const handleChangeClueDifficulty = useCallback(
     (newDiff: ClueDifficulty, targetPuzzleId?: string) => {
+      if (hasUserStartedSolving) {
+        setHintBannerMessage(
+          'Clue difficulty cannot be changed after you have started entering letters to prevent cheating!'
+        );
+        soundFX.playError();
+        return;
+      }
       soundFX.playClick();
       setClueDifficulty(newDiff);
       const pid = targetPuzzleId || activePuzzle.id;
@@ -392,13 +415,9 @@ export default function App() {
         );
       }
     },
-    [activePuzzle.id, currentUser]
+    [activePuzzle.id, currentUser, hasUserStartedSolving]
   );
 
-  // Player Grid Values (sized dynamically to activePuzzle.gridSize: 20x20 or 8x8)
-  const [userGrid, setUserGrid] = useState<string[][]>(() =>
-    Array.from({ length: 20 }, () => Array.from({ length: 20 }, () => ''))
-  );
   const [revealedCells, setRevealedCells] = useState<Set<string>>(new Set());
   const [errorCells, setErrorCells] = useState<Set<string>>(new Set());
   const [unlockedBreakdowns, setUnlockedBreakdowns] = useState<Set<string>>(
@@ -450,6 +469,7 @@ export default function App() {
       setVictorySubmitted(false);
       setIsVictoryPopupDismissed(false);
       setGridZoom(1.0);
+      setClueViewedDifficulties({});
 
       // Record initial difficulty base for this puzzle if not yet recorded
       const updatedEasiest = recordEasiestBaseForPuzzle(
@@ -581,6 +601,19 @@ export default function App() {
     );
   }, [activePuzzle, focusedCell, direction]);
 
+  // Track easiest difficulty viewed for each active clue
+  useEffect(() => {
+    if (!activeClue) return;
+    setClueViewedDifficulties((prev) => {
+      const existing = prev[activeClue.id];
+      const updated = existing
+        ? getEasierDifficulty(existing, clueDifficulty)
+        : clueDifficulty;
+      if (existing === updated) return prev;
+      return { ...prev, [activeClue.id]: updated };
+    });
+  }, [activeClue, clueDifficulty]);
+
   // Keep direction synced if focused cell only has one valid direction
   useEffect(() => {
     const cell = activePuzzle.grid[focusedCell.row]?.[focusedCell.col];
@@ -635,8 +668,14 @@ export default function App() {
       ...activePuzzle.clues.down,
     ];
     let solvedWords = 0;
+    let totalWordPoints = 0;
+    let maxPossibleWordPoints = 0;
 
     for (const clue of allClues) {
+      const viewedDiff = clueViewedDifficulties[clue.id] || easiestBaseForActivePuzzle;
+      const ptsPerLetter = LETTER_POINTS_PER_DIFFICULTY[viewedDiff] || 10;
+      maxPossibleWordPoints += clue.length * 15; // 15 pts/letter on hard
+
       let wordCorrect = true;
       for (let i = 0; i < clue.length; i++) {
         const r = clue.direction === 'across' ? clue.row : clue.row + i;
@@ -648,16 +687,14 @@ export default function App() {
       }
       if (wordCorrect) {
         solvedWords++;
+        totalWordPoints += clue.length * ptsPerLetter;
       }
     }
 
-    // Base score is determined by the easiest clue base chosen that day, minus 25 points for every 60 seconds taken
-    const baseScore = FIXED_DIFFICULTY_SCORES[easiestBaseForActivePuzzle];
-    const timePenalty = calculateTimePenalty(elapsedSeconds);
-    const finalScore = calculatePuzzleScore(
-      easiestBaseForActivePuzzle,
-      elapsedSeconds
-    );
+    const timePenalty = calculateTimePenalty(elapsedSeconds); // 10 pts per minute
+    const finalScore = Math.max(0, totalWordPoints - timePenalty);
+    const maxPossibleScore = Math.max(0, maxPossibleWordPoints - timePenalty);
+    const baseScore = totalWordPoints;
 
     const progressPercent =
       activePuzzle.totalWhiteCells > 0
@@ -689,6 +726,7 @@ export default function App() {
       baseScore,
       timePenalty,
       score: finalScore,
+      maxPossibleScore,
       progressPercent,
       accuracy,
       isComplete,
@@ -700,6 +738,7 @@ export default function App() {
     easiestBaseForActivePuzzle,
     elapsedSeconds,
     checkErrorsCount,
+    clueViewedDifficulties,
   ]);
 
   // Record score locally and to Cloud Firestore if player is signed in
@@ -1802,6 +1841,28 @@ export default function App() {
     }
   };
 
+  const handleAddPuzzleFromAdmin = (puzzle: PuzzleDefinition, themeId: VisualThemeId) => {
+    setPuzzles((prev) => [puzzle, ...prev]);
+    setSelectedPuzzleId(puzzle.id);
+    setVisualThemeId(themeId);
+    initializeBoardForPuzzle(puzzle);
+  };
+
+  const handleResetLeaderboardFromAdmin = () => {
+    const refreshed = resetLeaderboard();
+    setLocalLeaderboard(refreshed);
+  };
+
+  const handleDeletePuzzleFromAdmin = (puzzleId: string) => {
+    setPuzzles((prev) => prev.filter((p) => p.id !== puzzleId));
+    if (selectedPuzzleId === puzzleId) {
+      const remaining = puzzles.filter((p) => p.id !== puzzleId);
+      if (remaining.length > 0) {
+        setSelectedPuzzleId(remaining[0].id);
+      }
+    }
+  };
+
   // Render Title Screen when in TITLE_MENU
   if (gameState === 'TITLE_MENU') {
     return (
@@ -1832,6 +1893,10 @@ export default function App() {
           onOpenAuthModal={() => {
             soundFX.playClick();
             setIsAuthModalOpen(true);
+          }}
+          onOpenAdminModal={() => {
+            soundFX.playClick();
+            setIsAdminModalOpen(true);
           }}
           currentUser={currentUser}
           playerProfile={playerProfile}
@@ -1890,6 +1955,16 @@ export default function App() {
           onSignOut={handleSignOut}
           onUpdateDisplayName={handleUpdateDisplayName}
           leaderboard={leaderboard}
+        />
+
+        <AdminPanelModal
+          isOpen={isAdminModalOpen}
+          onClose={() => setIsAdminModalOpen(false)}
+          visualThemeId={visualThemeId}
+          puzzles={puzzles}
+          onAddPuzzle={handleAddPuzzleFromAdmin}
+          onResetLeaderboard={handleResetLeaderboardFromAdmin}
+          onDeletePuzzle={handleDeletePuzzleFromAdmin}
         />
       </>
     );
@@ -2011,16 +2086,15 @@ export default function App() {
 
             {/* Center: Tabular Game Telemetry Cluster with Base Score & -25 pts / 60s Time Deduction */}
             <div className="flex items-center gap-2 sm:gap-4 text-xs font-mono-tabular">
-              <div title="Base score by easiest clue tier chosen today minus 25 points for every 60 seconds taken">
+              <div title="Current score / maximum possible score based on viewed difficulty tiers and time penalty">
                 <span className={theme.textMuted}>SCORE </span>
                 <span className="font-bold text-xs sm:text-sm">
-                  {stats.score.toLocaleString()}
+                  {stats.score.toLocaleString()} / {stats.maxPossibleScore.toLocaleString()}
                 </span>
                 <span
-                  className={`hidden sm:inline ml-1 text-[11px] ${theme.textMuted} uppercase`}
+                  className={`hidden sm:inline ml-1 text-[11px] ${theme.textMuted}`}
                 >
-                  ({easiestBaseForActivePuzzle} base
-                  {stats.timePenalty > 0 ? ` −${stats.timePenalty}` : ''})
+                  pts
                 </span>
               </div>
               <span className={theme.textMuted} aria-hidden="true">
@@ -2395,12 +2469,12 @@ export default function App() {
               {/* 3D Logo Background between solid black background and grid (10% opacity) */}
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-0 flex items-center justify-center p-6 sm:p-10 select-none overflow-hidden"
+                className="pointer-events-none absolute -inset-[15px] flex items-center justify-center select-none"
               >
                 <img
-                  src="/assets/aistudio/3d_logo_944e5372.png"
+                  src="/assets/aistudio/Gemini_Generated_Image_wsrnmwsrnmwsrnmw_7fed61a6.jpg"
                   alt=""
-                  className="w-4/5 h-4/5 max-w-[520px] max-h-[520px] object-contain opacity-10 pointer-events-none select-none"
+                  className="w-full h-full object-cover opacity-10 pointer-events-none select-none"
                 />
               </div>
 
@@ -2427,30 +2501,13 @@ export default function App() {
                 role="grid"
                 aria-label={`${gridSize} by ${gridSize} Crossword Grid`}
               >
-                style={{
-                  width:
-                    gridZoom > 1.0
-                      ? `${Math.round(gridZoom * 100)}%`
-                      : '100%',
-                  height:
-                    gridZoom > 1.0
-                      ? `${Math.round(gridZoom * 100)}%`
-                      : '100%',
-                  minWidth: '100%',
-                  minHeight: '100%',
-                  gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
-                  gridTemplateRows: `repeat(${gridSize}, minmax(0, 1fr))`,
-                }}
-                role="grid"
-                aria-label={`${gridSize} by ${gridSize} Crossword Grid`}
-              >
                 {activePuzzle.grid.map((rowArr, rIdx) =>
                   rowArr.map((cell, cIdx) => {
                     if (cell.isBlocked) {
                       return (
                         <div
                           key={`${rIdx}-${cIdx}`}
-                          className="relative w-full h-full bg-black border-[0.5px] border-black/25 overflow-hidden"
+                          className="relative w-full h-full bg-transparent border-transparent pointer-events-none overflow-hidden"
                           role="gridcell"
                           aria-disabled="true"
                         />
@@ -3233,6 +3290,16 @@ export default function App() {
           onSignOut={handleSignOut}
           onUpdateDisplayName={handleUpdateDisplayName}
           leaderboard={leaderboard}
+        />
+
+        <AdminPanelModal
+          isOpen={isAdminModalOpen}
+          onClose={() => setIsAdminModalOpen(false)}
+          visualThemeId={visualThemeId}
+          puzzles={puzzles}
+          onAddPuzzle={handleAddPuzzleFromAdmin}
+          onResetLeaderboard={handleResetLeaderboardFromAdmin}
+          onDeletePuzzle={handleDeletePuzzleFromAdmin}
         />
       </div>
     </div>
