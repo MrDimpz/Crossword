@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Fraunces', Georgia, serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --box-opacity: 100%;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+    background-color: #0f172a;
+    background-image: url('/assets/aistudio/Gemini_Generated_Image_zd4wjizd4wjizd4w_30ba3baf.jpg');
+    background-size: cover;
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+  }
+
+  .app-main-bg {
+    background-image: url('/assets/aistudio/Gemini_Generated_Image_zd4wjizd4wjizd4w_30ba3baf.jpg');
+    background-size: cover;
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+  }
+
+  .crossword-board-bg {
+    background-color: #000000;
+    opacity: 1;
+  }
+
+  .game-elements-fade {
+    opacity: 0;
+    transition: opacity 5000ms ease-in-out;
+  }
+
+  .game-elements-fade-visible {
+    opacity: 1;
+  }
+
+  /* 100% Opaque Box Surface Classes */
+  .box-editorial-canvas {
+    background-color: #F8FAFC;
+  }
+  .box-editorial-surface {
+    background-color: #FFFFFF;
+  }
+  .box-editorial-elevated {
+    background-color: #F1F5F9;
+  }
+
+  .box-observatory-canvas {
+    background-color: #0A192F;
+  }
+  .box-observatory-surface {
+    background-color: #112240;
+  }
+  .box-observatory-elevated {
+    background-color: #1D3557;
+  }
+
+  .box-botanical-canvas {
+    background-color: #0B3B24;
+  }
+  .box-botanical-surface {
+    background-color: #114B2F;
+  }
+  .box-botanical-elevated {
+    background-color: #165B3A;
+  }
+
+  .box-mahogany-canvas {
+    background-color: #261815;
+  }
+  .box-mahogany-surface {
+    background-color: #36221E;
+  }
+  .box-mahogany-elevated {
+    background-color: #472E28;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono-tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom subtle scrollbars for clue lists */
+.clue-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.clue-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.clue-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 3px;
+}
+
+.clue-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.55);
+}

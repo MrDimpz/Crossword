@@ -1,0 +1,235 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Public player profile without PII, tracking career crossword statistics and display handle.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Player chosen display handle on leaderboards",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Optional avatar URL",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "puzzlesSolved": {
+          "type": "integer",
+          "description": "Total count of unique crosswords solved by the player"
+        },
+        "totalScore": {
+          "type": "integer",
+          "description": "Cumulative fixed score earned across solved puzzles"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was last updated"
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "photoURL",
+        "puzzlesSolved",
+        "totalScore",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LeaderboardScore": {
+      "title": "LeaderboardScore",
+      "description": "Permanent leaderboard score record for a completed 20x20 or 8x8 crossword puzzle.",
+      "type": "object",
+      "properties": {
+        "scoreId": {
+          "type": "string",
+          "description": "Deterministic or unique score document ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player who achieved the score",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "playerName": {
+          "type": "string",
+          "description": "Display name of the player",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "puzzleId": {
+          "type": "string",
+          "description": "ID of the completed crossword puzzle",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "puzzleTitle": {
+          "type": "string",
+          "description": "Title of the completed crossword puzzle",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "themeName": {
+          "type": "string",
+          "description": "Theme name of the puzzle",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "gridSize": {
+          "type": "integer",
+          "description": "Grid dimension (8 for Quick 8x8, 20 for Standard 20x20)",
+          "enum": [8, 20]
+        },
+        "score": {
+          "type": "integer",
+          "description": "Final score based on the easiest clue base chosen that day (1000, 2000, or 3000) minus 25 points for every 60 seconds taken (minimum 0)"
+        },
+        "timeSeconds": {
+          "type": "integer",
+          "description": "Elapsed solve time in seconds"
+        },
+        "hintsUsed": {
+          "type": "integer",
+          "description": "Number of hints used during the solve"
+        },
+        "easiestDifficultyUsed": {
+          "type": "string",
+          "description": "Easiest clue difficulty base chosen for this puzzle",
+          "enum": ["easy", "medium", "hard"]
+        },
+        "clueDifficulty": {
+          "type": "string",
+          "description": "Final active clue difficulty when completed",
+          "enum": ["easy", "medium", "hard"]
+        },
+        "accuracy": {
+          "type": "integer",
+          "description": "Accuracy percentage (0-100)"
+        },
+        "completedAt": {
+          "type": "string",
+          "description": "ISO date YYYY-MM-DD in Europe/London when completed",
+          "minLength": 10,
+          "maxLength": 20
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Whether the score entry is visible on the global leaderboard"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of initial score submission"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest score update"
+        }
+      },
+      "required": [
+        "scoreId",
+        "uid",
+        "playerName",
+        "puzzleId",
+        "puzzleTitle",
+        "themeName",
+        "gridSize",
+        "score",
+        "timeSeconds",
+        "hintsUsed",
+        "easiestDifficultyUsed",
+        "clueDifficulty",
+        "accuracy",
+        "completedAt",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PlayerPuzzleProgress": {
+      "title": "PlayerPuzzleProgress",
+      "description": "Per-user per-puzzle permanent tracking of easiest clue difficulty base chosen and completion status.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "puzzleId": {
+          "type": "string",
+          "description": "Puzzle identifier",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "easiestDifficultyUsed": {
+          "type": "string",
+          "description": "Easiest clue difficulty selected by the player for this puzzle",
+          "enum": ["easy", "medium", "hard"]
+        },
+        "completed": {
+          "type": "boolean",
+          "description": "Whether the player has completed this puzzle"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update"
+        }
+      },
+      "required": [
+        "uid",
+        "puzzleId",
+        "easiestDifficultyUsed",
+        "completed",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserPublicProfile"
+      },
+      "description": "Public player profile documents keyed by Firebase Auth UID."
+    },
+    "/users/{userId}/puzzle_progress/{puzzleId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerPuzzleProgress"
+      },
+      "description": "Subcollection storing a player's locked easiest clue difficulty base and completion state per puzzle."
+    },
+    "/leaderboard_scores/{scoreId}": {
+      "schema": {
+        "$ref": "#/entities/LeaderboardScore"
+      },
+      "description": "Global permanent leaderboard entries across 20x20 Standard and 8x8 Quick crosswords."
+    }
+  }
+}

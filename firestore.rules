@@ -1,0 +1,336 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Monotonic difficulty guard: a player's easiest base for a puzzle can only stay the same or move to an easier tier
+    function isValidDifficultyTransition(oldDiff, newDiff) {
+      return (oldDiff == 'hard' && (newDiff == 'hard' || newDiff == 'medium' || newDiff == 'easy')) ||
+             (oldDiff == 'medium' && (newDiff == 'medium' || newDiff == 'easy')) ||
+             (oldDiff == 'easy' && newDiff == 'easy');
+    }
+
+    // 3. Entity Validation Blueprints (Anti-Update-Gap)
+    function isValidUserPublicProfile(data) {
+      return data.keys().hasAll([
+        'uid',
+        'displayName',
+        'photoURL',
+        'puzzlesSolved',
+        'totalScore',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid',
+        'displayName',
+        'photoURL',
+        'puzzlesSolved',
+        'totalScore',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.uid is string &&
+      data.uid.size() >= 1 &&
+      data.uid.size() <= 128 &&
+      data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.uid == request.auth.uid &&
+      data.displayName is string &&
+      data.displayName.size() >= 1 &&
+      data.displayName.size() <= 40 &&
+      data.photoURL is string &&
+      data.photoURL.size() >= 0 &&
+      data.photoURL.size() <= 500 &&
+      data.puzzlesSolved is int &&
+      data.puzzlesSolved >= 0 &&
+      data.puzzlesSolved <= 100000 &&
+      data.totalScore is int &&
+      data.totalScore >= 0 &&
+      data.totalScore <= 300000000 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidPlayerPuzzleProgress(data) {
+      return data.keys().hasAll([
+        'uid',
+        'puzzleId',
+        'easiestDifficultyUsed',
+        'completed',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid',
+        'puzzleId',
+        'easiestDifficultyUsed',
+        'completed',
+        'updatedAt'
+      ]) &&
+      data.uid is string &&
+      data.uid.size() >= 1 &&
+      data.uid.size() <= 128 &&
+      data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.uid == request.auth.uid &&
+      data.puzzleId is string &&
+      data.puzzleId.size() >= 1 &&
+      data.puzzleId.size() <= 100 &&
+      data.puzzleId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.easiestDifficultyUsed is string &&
+      data.easiestDifficultyUsed.size() >= 4 &&
+      data.easiestDifficultyUsed.size() <= 6 &&
+      (data.easiestDifficultyUsed == 'easy' ||
+       data.easiestDifficultyUsed == 'medium' ||
+       data.easiestDifficultyUsed == 'hard') &&
+      data.completed is bool &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidLeaderboardScore(data) {
+      return data.keys().hasAll([
+        'scoreId',
+        'uid',
+        'playerName',
+        'puzzleId',
+        'puzzleTitle',
+        'themeName',
+        'gridSize',
+        'score',
+        'timeSeconds',
+        'hintsUsed',
+        'easiestDifficultyUsed',
+        'clueDifficulty',
+        'accuracy',
+        'completedAt',
+        'isPublic',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'scoreId',
+        'uid',
+        'playerName',
+        'puzzleId',
+        'puzzleTitle',
+        'themeName',
+        'gridSize',
+        'score',
+        'timeSeconds',
+        'hintsUsed',
+        'easiestDifficultyUsed',
+        'clueDifficulty',
+        'accuracy',
+        'completedAt',
+        'isPublic',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.scoreId is string &&
+      data.scoreId.size() >= 1 &&
+      data.scoreId.size() <= 128 &&
+      data.scoreId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.uid is string &&
+      data.uid.size() >= 1 &&
+      data.uid.size() <= 128 &&
+      data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.uid == request.auth.uid &&
+      data.playerName is string &&
+      data.playerName.size() >= 1 &&
+      data.playerName.size() <= 40 &&
+      data.puzzleId is string &&
+      data.puzzleId.size() >= 1 &&
+      data.puzzleId.size() <= 100 &&
+      data.puzzleId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.puzzleTitle is string &&
+      data.puzzleTitle.size() >= 1 &&
+      data.puzzleTitle.size() <= 120 &&
+      data.themeName is string &&
+      data.themeName.size() >= 1 &&
+      data.themeName.size() <= 100 &&
+      data.gridSize is int &&
+      (data.gridSize == 8 || data.gridSize == 20) &&
+      data.easiestDifficultyUsed is string &&
+      data.easiestDifficultyUsed.size() >= 4 &&
+      data.easiestDifficultyUsed.size() <= 6 &&
+      data.score is int &&
+      data.score >= 0 &&
+      ((data.easiestDifficultyUsed == 'easy' && data.score <= 1000) ||
+       (data.easiestDifficultyUsed == 'medium' && data.score <= 2000) ||
+       (data.easiestDifficultyUsed == 'hard' && data.score <= 3000)) &&
+      data.clueDifficulty is string &&
+      data.clueDifficulty.size() >= 4 &&
+      data.clueDifficulty.size() <= 6 &&
+      (data.clueDifficulty == 'easy' ||
+       data.clueDifficulty == 'medium' ||
+       data.clueDifficulty == 'hard') &&
+      data.timeSeconds is int &&
+      data.timeSeconds >= 1 &&
+      data.timeSeconds <= 864000 &&
+      data.hintsUsed is int &&
+      data.hintsUsed >= 0 &&
+      data.hintsUsed <= 5000 &&
+      data.accuracy is int &&
+      data.accuracy >= 0 &&
+      data.accuracy <= 100 &&
+      data.completedAt is string &&
+      data.completedAt.size() >= 10 &&
+      data.completedAt.size() <= 20 &&
+      data.isPublic is bool &&
+      data.isPublic == true &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // 4. Collection: /users/{userId}
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && existing().uid == userId;
+      allow list: if false;
+
+      allow create: if (
+        isVerifiedUser() &&
+        isValidId(userId) &&
+        userId == request.auth.uid &&
+        isValidUserPublicProfile(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time
+      );
+
+      allow update: if (
+        isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserPublicProfile(incoming()) &&
+        userId == request.auth.uid &&
+        existing().uid == request.auth.uid &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Action 1: Update display handle or avatar
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt']) ||
+          // Action 2: Increment career solved count and total score
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'puzzlesSolved', 'totalScore', 'updatedAt'])
+        )
+      );
+
+      allow delete: if false;
+
+      // Subcollection: /users/{userId}/puzzle_progress/{puzzleId} (Pillar 1 Master Gate)
+      match /puzzle_progress/{puzzleId} {
+        allow get: if (
+          isSignedIn() &&
+          isValidId(userId) &&
+          isValidId(puzzleId) &&
+          request.auth.uid == userId &&
+          existing().uid == request.auth.uid &&
+          exists(/databases/$(database)/documents/users/$(userId))
+        );
+
+        allow list: if (
+          isSignedIn() &&
+          request.auth.uid == userId &&
+          existing().uid == request.auth.uid
+        );
+
+        allow create: if (
+          isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidId(puzzleId) &&
+          request.auth.uid == userId &&
+          isValidPlayerPuzzleProgress(incoming()) &&
+          incoming().puzzleId == puzzleId &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId))
+        );
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidId(puzzleId) &&
+          isValidPlayerPuzzleProgress(incoming()) &&
+          request.auth.uid == userId &&
+          existing().uid == request.auth.uid &&
+          incoming().uid == existing().uid &&
+          incoming().puzzleId == existing().puzzleId &&
+          isValidDifficultyTransition(existing().easiestDifficultyUsed, incoming().easiestDifficultyUsed) &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'easiestDifficultyUsed',
+            'completed',
+            'updatedAt'
+          ]) &&
+          exists(/databases/$(database)/documents/users/$(userId))
+        );
+
+        allow delete: if false;
+      }
+    }
+
+    // 5. Collection: /leaderboard_scores/{scoreId}
+    match /leaderboard_scores/{scoreId} {
+      allow get: if isValidId(scoreId) && existing().isPublic == true;
+      allow list: if existing().isPublic == true;
+
+      allow create: if (
+        isVerifiedUser() &&
+        isValidId(scoreId) &&
+        isValidLeaderboardScore(incoming()) &&
+        incoming().scoreId == scoreId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().uid))
+      );
+
+      allow update: if (
+        isVerifiedUser() &&
+        isValidId(scoreId) &&
+        isValidLeaderboardScore(incoming()) &&
+        existing().uid == request.auth.uid &&
+        incoming().uid == existing().uid &&
+        incoming().scoreId == existing().scoreId &&
+        incoming().puzzleId == existing().puzzleId &&
+        incoming().gridSize == existing().gridSize &&
+        isValidDifficultyTransition(existing().easiestDifficultyUsed, incoming().easiestDifficultyUsed) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'playerName',
+          'score',
+          'timeSeconds',
+          'hintsUsed',
+          'easiestDifficultyUsed',
+          'clueDifficulty',
+          'accuracy',
+          'completedAt',
+          'updatedAt'
+        ]) &&
+        exists(/databases/$(database)/documents/users/$(incoming().uid))
+      );
+
+      allow delete: if false;
+    }
+  }
+}
