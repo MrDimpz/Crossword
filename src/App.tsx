@@ -182,6 +182,7 @@ export default function App() {
 
   // Mobile & Touch Grid Zoom state (scale from 1.0 to 3.0 without affecting any other part of the page)
   const [gridZoom, setGridZoom] = useState<number>(1.0);
+  const [isPinching, setIsPinching] = useState<boolean>(false);
 
   const handleZoomIn = useCallback(() => {
     soundFX.playClick();
@@ -949,6 +950,7 @@ export default function App() {
           e.touches[0].clientY - e.touches[1].clientY
         );
         initialZoomLevel = gridZoom;
+        setIsPinching(true);
       }
     };
 
@@ -961,14 +963,16 @@ export default function App() {
           e.touches[0].clientY - e.touches[1].clientY
         );
         const scale = currentDist / initialDist;
+        // Smooth continuous scaling without stepped increments
         const targetZoom = Math.min(3.0, Math.max(1.0, initialZoomLevel * scale));
-        setGridZoom(Math.round(targetZoom * 10) / 10);
+        setGridZoom(targetZoom);
       }
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
       if (e.touches.length < 2) {
         initialDist = 0;
+        setIsPinching(false);
       }
     };
 
@@ -976,9 +980,9 @@ export default function App() {
     const handleWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
-        const delta = e.deltaY < 0 ? 0.2 : -0.2;
+        const delta = e.deltaY < 0 ? 0.08 : -0.08;
         setGridZoom((prev) =>
-          Math.min(3.0, Math.max(1.0, Math.round((prev + delta) * 10) / 10))
+          Math.min(3.0, Math.max(1.0, prev + delta))
         );
       }
     };
@@ -1011,8 +1015,8 @@ export default function App() {
       if (cellEl) {
         cellEl.scrollIntoView({
           behavior: 'smooth',
-          block: 'nearest',
-          inline: 'nearest',
+          block: 'center',
+          inline: 'center',
         });
       }
     }
@@ -1225,9 +1229,18 @@ export default function App() {
       const nextClue = ordered[nextIdx];
       soundFX.playClick();
       setDirection(nextClue.direction);
-      setFocusedCell(
-        getTargetCellForClue(nextClue, userGrid, skipFilledCells)
-      );
+      const targetCell = getTargetCellForClue(nextClue, userGrid, skipFilledCells);
+      setFocusedCell(targetCell);
+
+      // On mobile when going to the next clue, centre the clue on the screen
+      if (typeof window !== 'undefined' && window.innerWidth < 768) {
+        window.setTimeout(() => {
+          const clueSpotlightEl = document.getElementById('active-clue-spotlight');
+          if (clueSpotlightEl) {
+            clueSpotlightEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 40);
+      }
     },
     [activePuzzle, activeClue, getTargetCellForClue, userGrid, skipFilledCells]
   );
@@ -2042,6 +2055,63 @@ export default function App() {
               </div>
             </div>
 
+            {/* Gameplay Quick Controls: Skip Filled, Fit, Own Keyboard */}
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              {/* Skip Already Filled Boxes Toggle */}
+              <button
+                type="button"
+                role="switch"
+                aria-checked={skipFilledCells}
+                onClick={handleToggleSkipFilled}
+                className={`px-2 sm:px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                  skipFilledCells
+                    ? `${theme.accentBorder} ${theme.bgElevated} text-emerald-400`
+                    : `${theme.borderSubtle} ${theme.bgCanvas} ${theme.textSecondary}`
+                }`}
+                title="When enabled, typing a letter automatically skips over boxes that are already filled"
+              >
+                <FastForward className="w-3.5 h-3.5" />
+                <span>Skip Filled: {skipFilledCells ? 'ON' : 'OFF'}</span>
+              </button>
+
+              {/* Fit / Zoom Reset Button */}
+              <button
+                type="button"
+                onClick={handleResetZoom}
+                className={`px-2 sm:px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
+                  gridZoom > 1.05
+                    ? `${theme.accentBg} ${theme.accentText}`
+                    : `${theme.borderSubtle} ${theme.bgCanvas} ${theme.textSecondary} hover:${theme.textPrimary}`
+                }`}
+                title="Reset crossword grid zoom to Fit"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+                <span>
+                  {gridZoom > 1.05 ? `Fit (${Math.round(gridZoom * 100)}%)` : 'Fit'}
+                </span>
+              </button>
+
+              {/* Use Device's Own Keyboard Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  soundFX.playClick();
+                  focusNativeKeyboard();
+                }}
+                className={`px-2 sm:px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+                  isNativeKeyboardFocused
+                    ? `${theme.accentBg} ${theme.accentText}`
+                    : `${theme.borderSubtle} ${theme.bgElevated} ${theme.textPrimary}`
+                }`}
+                title="Open your device's native keyboard to type directly into the crossword"
+              >
+                <Keyboard className="w-3.5 h-3.5" />
+                <span>
+                  {isNativeKeyboardFocused ? 'Keyboard Active' : 'Own Keyboard'}
+                </span>
+              </button>
+            </div>
+
             {/* Right: Player Account, Archive, Scoreboard, Palette, Pause, Mute */}
             <div className="flex items-center gap-1.5 sm:gap-2">
               {gameState === 'VICTORY' && isVictoryPopupDismissed && (
@@ -2167,6 +2237,7 @@ export default function App() {
           <div className="xl:col-span-7 flex flex-col items-center w-full">
             {/* Active Clue Spotlight Bar + Mobile/Desktop Gameplay Controls directly above the Grid */}
             <div
+              id="active-clue-spotlight"
               className={`w-[calc(100%-20px)] mb-0 p-3 sm:p-3.5 rounded-t-xl border border-b-0 ${theme.borderSubtle} ${theme.bgSurface} flex flex-col gap-2.5`}
             >
               <div className="flex items-start justify-between gap-2">
@@ -2243,113 +2314,33 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Action Strip: Direction Toggle + Skip Filled Boxes Option + Native Device Keyboard Trigger + Mobile Grid Zoom */}
+              {/* Action Strip: Direction Toggle */}
               <div
-                className={`pt-2 border-t ${theme.borderSubtle} flex flex-wrap items-center justify-between gap-2`}
+                className={`pt-2 border-t ${theme.borderSubtle} flex items-center justify-between gap-2`}
               >
-                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                  {/* Switch Across / Down */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const cell =
-                        activePuzzle.grid[focusedCell.row]?.[focusedCell.col];
-                      if (cell && cell.acrossClueId && cell.downClueId) {
-                        soundFX.playClick();
-                        setDirection((prev) =>
-                          prev === 'across' ? 'down' : 'across'
-                        );
-                      }
-                      focusNativeKeyboard();
-                    }}
-                    className={`px-2.5 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgElevated} text-xs font-medium flex items-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap shrink-0`}
-                    title="Switch between Across and Down (Spacebar)"
-                  >
-                    <ArrowLeftRight className="w-3.5 h-3.5" />
-                    <span>{direction === 'across' ? 'Across' : 'Down'}</span>
-                  </button>
-
-                  {/* Skip Already Filled Boxes Toggle */}
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={skipFilledCells}
-                    onClick={handleToggleSkipFilled}
-                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                      skipFilledCells
-                        ? `${theme.accentBorder} ${theme.bgElevated} text-emerald-400`
-                        : `${theme.borderSubtle} ${theme.bgCanvas} ${theme.textSecondary}`
-                    }`}
-                    title="When enabled, typing a letter automatically skips over boxes that are already filled"
-                  >
-                    <FastForward className="w-3.5 h-3.5" />
-                    <span>
-                      Skip Filled: {skipFilledCells ? 'ON' : 'OFF'}
-                    </span>
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-1.5 sm:gap-2">
-                  {/* Grid Zoom Controls (zooms only the crossword grid without affecting any other aspect of the page) */}
-                  <div
-                    className={`flex items-center gap-0.5 p-0.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas}`}
-                    title="Crossword grid zoom (or pinch with 2 fingers directly on the grid on mobile)"
-                  >
-                    <button
-                      type="button"
-                      onClick={handleZoomOut}
-                      disabled={gridZoom <= 1.0}
-                      className={`p-1 rounded hover:opacity-80 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed ${theme.textPrimary}`}
-                      title="Zoom Out Grid (-)"
-                      aria-label="Zoom out grid"
-                    >
-                      <ZoomOut className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleResetZoom}
-                      className={`px-1.5 py-0.5 text-[10px] sm:text-xs font-mono-tabular font-semibold rounded cursor-pointer whitespace-nowrap transition-colors ${
-                        gridZoom > 1.0
-                          ? `${theme.accentBg} ${theme.accentText}`
-                          : `${theme.textSecondary} hover:${theme.textPrimary}`
-                      }`}
-                      title="Tap to reset zoom to Fit (100%)"
-                    >
-                      {gridZoom > 1.0 ? `${Math.round(gridZoom * 100)}%` : 'Fit'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleZoomIn}
-                      disabled={gridZoom >= 3.0}
-                      className={`p-1 rounded hover:opacity-80 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed ${theme.textPrimary}`}
-                      title="Zoom In Grid (+)"
-                      aria-label="Zoom in grid"
-                    >
-                      <ZoomIn className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  {/* Use Device's Own Keyboard Button */}
-                  <button
-                    type="button"
-                    onClick={() => {
+                {/* Switch Across / Down */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cell =
+                      activePuzzle.grid[focusedCell.row]?.[focusedCell.col];
+                    if (cell && cell.acrossClueId && cell.downClueId) {
                       soundFX.playClick();
-                      focusNativeKeyboard();
-                    }}
-                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-                      isNativeKeyboardFocused
-                        ? `${theme.accentBg} ${theme.accentText}`
-                        : `${theme.borderSubtle} ${theme.bgElevated} ${theme.textPrimary}`
-                    }`}
-                    title="Open your device's native keyboard to type directly into the crossword"
-                  >
-                    <Keyboard className="w-3.5 h-3.5" />
-                    <span>
-                      {isNativeKeyboardFocused
-                        ? 'Keyboard Active'
-                        : 'Own Keyboard'}
-                    </span>
-                  </button>
+                      setDirection((prev) =>
+                        prev === 'across' ? 'down' : 'across'
+                      );
+                    }
+                    focusNativeKeyboard();
+                  }}
+                  className={`px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgElevated} text-xs font-semibold flex items-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap shrink-0`}
+                  title="Switch between Across and Down (Spacebar)"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" />
+                  <span>Direction: {direction === 'across' ? 'Across' : 'Down'}</span>
+                </button>
+
+                <div className={`text-[11px] ${theme.textMuted} font-mono-tabular truncate`}>
+                  {activeClue ? `${activeClue.direction.toUpperCase()} · ${activeClue.length} Letters` : ''}
                 </div>
               </div>
             </div>
@@ -2367,9 +2358,9 @@ export default function App() {
                 touchAction: gridZoom > 1.0 ? 'pan-x pan-y' : 'none',
               }}
             >
-              {/* Floating Zoom & Pan Indicator Badge when zoomed */}
-              {gridZoom > 1.0 && (
-                <div className="sticky top-2 left-2 z-30 inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/85 border border-amber-500/50 text-amber-300 text-[11px] font-mono-tabular backdrop-blur-sm pointer-events-none shadow-lg">
+              {/* Floating Zoom & Pan Indicator Badge when zoomed (hidden on mobile view) */}
+              {gridZoom > 1.05 && (
+                <div className="hidden sm:inline-flex sticky top-2 left-2 z-30 items-center gap-1.5 px-2 py-1 rounded-lg bg-black/85 border border-amber-500/50 text-amber-300 text-[11px] font-mono-tabular backdrop-blur-sm pointer-events-none shadow-lg">
                   <ZoomIn className="w-3 h-3 text-amber-400" />
                   <span>{Math.round(gridZoom * 100)}%</span>
                   <span className="text-[10px] opacity-75">· Drag to pan</span>
@@ -2398,11 +2389,44 @@ export default function App() {
               {/* Solid Black Crossword Background */}
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-0 crossword-board-bg"
+                className="pointer-events-none absolute inset-0 bg-black crossword-board-bg"
               />
 
+              {/* 3D Logo Background between solid black background and grid (10% opacity) */}
               <div
-                className="relative z-10 grid border border-slate-700/60 m-auto shrink-0 transition-[width,height] duration-150 ease-out"
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 flex items-center justify-center p-6 sm:p-10 select-none overflow-hidden"
+              >
+                <img
+                  src="/assets/aistudio/3d_logo_944e5372.png"
+                  alt=""
+                  className="w-4/5 h-4/5 max-w-[520px] max-h-[520px] object-contain opacity-10 pointer-events-none select-none"
+                />
+              </div>
+
+              <div
+                className={`relative z-10 grid border border-slate-700/60 m-auto shrink-0 ${
+                  isPinching
+                    ? 'transition-none'
+                    : 'transition-[width,height] duration-150 ease-out'
+                }`}
+                style={{
+                  width:
+                    gridZoom > 1.0
+                      ? `${Math.round(gridZoom * 100)}%`
+                      : '100%',
+                  height:
+                    gridZoom > 1.0
+                      ? `${Math.round(gridZoom * 100)}%`
+                      : '100%',
+                  minWidth: '100%',
+                  minHeight: '100%',
+                  gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
+                  gridTemplateRows: `repeat(${gridSize}, minmax(0, 1fr))`,
+                }}
+                role="grid"
+                aria-label={`${gridSize} by ${gridSize} Crossword Grid`}
+              >
                 style={{
                   width:
                     gridZoom > 1.0
