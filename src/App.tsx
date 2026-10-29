@@ -2354,7 +2354,7 @@ export default function App() {
                         {getDifficultyDescriptor(clueDifficulty)}
                       </span>
                     </div>
-                    <div className="text-xs sm:text-base font-medium leading-snug">
+                    <div className="text-base sm:text-2xl font-bold leading-snug">
                       {getClueTextForDifficulty(activeClue)}
                     </div>
                     {unlockedBreakdowns.has(activeClue.id) && (
@@ -2367,7 +2367,7 @@ export default function App() {
                     )}
                   </div>
                 ) : (
-                  <div className="text-xs sm:text-sm flex-1 px-1">
+                  <div className="text-sm sm:text-base flex-1 px-1">
                     Tap any numbered white cell on the {gridSize}×{gridSize}{' '}
                     grid to begin solving.
                   </div>
@@ -2386,36 +2386,6 @@ export default function App() {
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
-              </div>
-
-              {/* Action Strip: Direction Toggle */}
-              <div
-                className={`pt-2 border-t ${theme.borderSubtle} flex items-center justify-between gap-2`}
-              >
-                {/* Switch Across / Down */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const cell =
-                      activePuzzle.grid[focusedCell.row]?.[focusedCell.col];
-                    if (cell && cell.acrossClueId && cell.downClueId) {
-                      soundFX.playClick();
-                      setDirection((prev) =>
-                        prev === 'across' ? 'down' : 'across'
-                      );
-                    }
-                    focusNativeKeyboard();
-                  }}
-                  className={`px-3 py-1.5 rounded-lg border ${theme.borderSubtle} ${theme.bgElevated} text-xs font-semibold flex items-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap shrink-0`}
-                  title="Switch between Across and Down (Spacebar)"
-                >
-                  <ArrowLeftRight className="w-3.5 h-3.5" />
-                  <span>Direction: {direction === 'across' ? 'Across' : 'Down'}</span>
-                </button>
-
-                <div className={`text-[11px] ${theme.textMuted} font-mono-tabular truncate`}>
-                  {activeClue ? `${activeClue.direction.toUpperCase()} · ${activeClue.length} Letters` : ''}
-                </div>
               </div>
             </div>
 
@@ -2474,7 +2444,7 @@ export default function App() {
                 <img
                   src="/assets/aistudio/Gemini_Generated_Image_wsrnmwsrnmwsrnmw_7fed61a6.jpg"
                   alt=""
-                  className="w-full h-full object-cover opacity-10 pointer-events-none select-none"
+                  className="w-full h-full object-cover opacity-40 pointer-events-none select-none"
                 />
               </div>
 
