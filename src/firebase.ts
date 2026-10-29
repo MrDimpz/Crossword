@@ -239,6 +239,25 @@ export function formatFirebaseAuthError(err: unknown): FormattedAuthError {
     };
   }
 
+  // Check if rawMessage is a serialized FirestoreErrorInfo JSON object
+  if (rawMessage.startsWith('{') && rawMessage.includes('"operationType"')) {
+    try {
+      const parsed = JSON.parse(rawMessage) as Partial<FirestoreErrorInfo>;
+      if (parsed.error) {
+        return {
+          code: 'firestore/error',
+          isUnauthorizedDomain: false,
+          isProviderDisabled: false,
+          hostname,
+          projectId: FIREBASE_PROJECT_ID,
+          message: `Cloud sync notice (${parsed.operationType || 'sync'}): ${parsed.error}`,
+        };
+      }
+    } catch {
+      // fall through
+    }
+  }
+
   return {
     code,
     isUnauthorizedDomain: false,
@@ -294,68 +313,87 @@ export async function signOutPlayerAccount(): Promise<void> {
   await signOut(auth);
 }
 
+// Per-UID serialization locks to prevent concurrent getDoc/setDoc race conditions on sign-in
+const profileSyncLocks = new Map<string, Promise<PlayerProfile>>();
+const progressSyncLocks = new Map<string, Promise<ClueDifficulty>>();
+
 /**
  * Ensures the authenticated user has a valid UserPublicProfile document in /users/{uid}.
+ * Serialized per UID so simultaneous calls from onAuthStateChanged and signIn handlers never race.
  */
 export async function ensureUserPublicProfile(
   user: User,
   customDisplayName?: string
 ): Promise<PlayerProfile> {
   const uid = sanitizeValidId(user.uid, 128);
-  const userPath = `users/${uid}`;
-  const userRef = doc(db, 'users', uid);
+  const prevLock = profileSyncLocks.get(uid) || Promise.resolve(null as unknown as PlayerProfile);
 
-  try {
-    const snap = await getDoc(userRef);
-    const fallbackName = sanitizeDisplayName(
-      customDisplayName ||
-        user.displayName ||
-        user.email?.split('@')[0] ||
-        'Cruciverbalist'
-    );
-    const safePhoto = (user.photoURL || '').slice(0, 500);
+  const nextTask = prevLock
+    .catch(() => null as unknown as PlayerProfile)
+    .then(async () => {
+      const userPath = `users/${uid}`;
+      const userRef = doc(db, 'users', uid);
+      let currentOp: OperationType = OperationType.GET;
 
-    if (!snap.exists()) {
-      await setDoc(userRef, {
-        uid,
-        displayName: fallbackName,
-        photoURL: safePhoto,
-        puzzlesSolved: 0,
-        totalScore: 0,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return {
-        uid,
-        displayName: fallbackName,
-        photoURL: safePhoto,
-        puzzlesSolved: 0,
-        totalScore: 0,
-      };
-    } else {
-      const data = snap.data();
-      const existingName = sanitizeDisplayName(
-        customDisplayName || data.displayName || fallbackName
-      );
-      if (customDisplayName && existingName !== data.displayName) {
-        await updateDoc(userRef, {
-          displayName: existingName,
-          photoURL: safePhoto,
-          updatedAt: serverTimestamp(),
-        });
+      try {
+        const snap = await getDoc(userRef);
+        const fallbackName = sanitizeDisplayName(
+          customDisplayName ||
+            user.displayName ||
+            user.email?.split('@')[0] ||
+            'Cruciverbalist'
+        );
+        const safePhoto = (user.photoURL || '').slice(0, 500);
+
+        if (!snap.exists()) {
+          currentOp = OperationType.CREATE;
+          await setDoc(userRef, {
+            uid,
+            displayName: fallbackName,
+            photoURL: safePhoto,
+            puzzlesSolved: 0,
+            totalScore: 0,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          return {
+            uid,
+            displayName: fallbackName,
+            photoURL: safePhoto,
+            puzzlesSolved: 0,
+            totalScore: 0,
+          };
+        } else {
+          const data = snap.data();
+          const existingName = sanitizeDisplayName(
+            customDisplayName || data.displayName || fallbackName
+          );
+          if (customDisplayName && existingName !== data.displayName) {
+            currentOp = OperationType.UPDATE;
+            await updateDoc(userRef, {
+              displayName: existingName,
+              photoURL: safePhoto,
+              updatedAt: serverTimestamp(),
+            });
+          }
+          return {
+            uid,
+            displayName: existingName,
+            photoURL:
+              typeof data.photoURL === 'string' ? data.photoURL : safePhoto,
+            puzzlesSolved:
+              typeof data.puzzlesSolved === 'number' ? data.puzzlesSolved : 0,
+            totalScore:
+              typeof data.totalScore === 'number' ? data.totalScore : 0,
+          };
+        }
+      } catch (error) {
+        handleFirestoreError(error, currentOp, userPath);
       }
-      return {
-        uid,
-        displayName: existingName,
-        photoURL: typeof data.photoURL === 'string' ? data.photoURL : safePhoto,
-        puzzlesSolved:
-          typeof data.puzzlesSolved === 'number' ? data.puzzlesSolved : 0,
-        totalScore: typeof data.totalScore === 'number' ? data.totalScore : 0,
-      };
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, userPath);
-  }
+    });
+
+  profileSyncLocks.set(uid, nextTask);
+  return nextTask;
 }
 
 /**
@@ -407,47 +445,65 @@ export async function syncPuzzleProgressToCloud(
 ): Promise<ClueDifficulty> {
   const uid = sanitizeValidId(user.uid, 128);
   const puzzleId = sanitizeValidId(rawPuzzleId, 100);
-  const progressPath = `users/${uid}/puzzle_progress/${puzzleId}`;
-  const progressRef = doc(db, 'users', uid, 'puzzle_progress', puzzleId);
+  const lockKey = `${uid}_${puzzleId}`;
+  const prevLock =
+    progressSyncLocks.get(lockKey) ||
+    Promise.resolve(chosenDifficulty as ClueDifficulty);
 
-  try {
-    await ensureUserPublicProfile(user);
-    const snap = await getDoc(progressRef);
-    if (!snap.exists()) {
-      await setDoc(progressRef, {
-        uid,
-        puzzleId,
-        easiestDifficultyUsed: chosenDifficulty,
-        completed,
-        updatedAt: serverTimestamp(),
-      });
-      return chosenDifficulty;
-    } else {
-      const existingData = snap.data();
-      const prevDiff: ClueDifficulty =
-        existingData.easiestDifficultyUsed === 'easy' ||
-        existingData.easiestDifficultyUsed === 'medium' ||
-        existingData.easiestDifficultyUsed === 'hard'
-          ? existingData.easiestDifficultyUsed
-          : chosenDifficulty;
-      const monotonicEasiest = getEasierDifficulty(prevDiff, chosenDifficulty);
-      const nextCompleted = Boolean(existingData.completed) || completed;
+  const nextTask = prevLock
+    .catch(() => chosenDifficulty)
+    .then(async () => {
+      const progressPath = `users/${uid}/puzzle_progress/${puzzleId}`;
+      const progressRef = doc(db, 'users', uid, 'puzzle_progress', puzzleId);
+      let currentOp: OperationType = OperationType.GET;
 
-      if (
-        monotonicEasiest !== prevDiff ||
-        nextCompleted !== Boolean(existingData.completed)
-      ) {
-        await updateDoc(progressRef, {
-          easiestDifficultyUsed: monotonicEasiest,
-          completed: nextCompleted,
-          updatedAt: serverTimestamp(),
-        });
+      try {
+        await ensureUserPublicProfile(user);
+        const snap = await getDoc(progressRef);
+        if (!snap.exists()) {
+          currentOp = OperationType.CREATE;
+          await setDoc(progressRef, {
+            uid,
+            puzzleId,
+            easiestDifficultyUsed: chosenDifficulty,
+            completed,
+            updatedAt: serverTimestamp(),
+          });
+          return chosenDifficulty;
+        } else {
+          const existingData = snap.data();
+          const prevDiff: ClueDifficulty =
+            existingData.easiestDifficultyUsed === 'easy' ||
+            existingData.easiestDifficultyUsed === 'medium' ||
+            existingData.easiestDifficultyUsed === 'hard'
+              ? existingData.easiestDifficultyUsed
+              : chosenDifficulty;
+          const monotonicEasiest = getEasierDifficulty(
+            prevDiff,
+            chosenDifficulty
+          );
+          const nextCompleted = Boolean(existingData.completed) || completed;
+
+          if (
+            monotonicEasiest !== prevDiff ||
+            nextCompleted !== Boolean(existingData.completed)
+          ) {
+            currentOp = OperationType.UPDATE;
+            await updateDoc(progressRef, {
+              easiestDifficultyUsed: monotonicEasiest,
+              completed: nextCompleted,
+              updatedAt: serverTimestamp(),
+            });
+          }
+          return monotonicEasiest;
+        }
+      } catch (error) {
+        handleFirestoreError(error, currentOp, progressPath);
       }
-      return monotonicEasiest;
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, progressPath);
-  }
+    });
+
+  progressSyncLocks.set(lockKey, nextTask);
+  return nextTask;
 }
 
 /**

@@ -26,9 +26,8 @@ service cloud.firestore {
 
     function isVerifiedUser() {
       return isSignedIn() && (
-        request.auth.token.email_verified == true ||
-        request.auth.token.firebase.sign_in_provider == 'password' ||
-        request.auth.uid != null
+        request.auth.uid != null ||
+        request.auth.token.email_verified == true
       );
     }
 
@@ -211,7 +210,7 @@ service cloud.firestore {
 
     // 4. Collection: /users/{userId}
     match /users/{userId} {
-      allow get: if isSignedIn() && isValidId(userId) && existing().uid == userId;
+      allow get: if isSignedIn() && isValidId(userId) && (resource == null || existing().uid == userId);
       allow list: if false;
 
       allow create: if (
@@ -249,8 +248,7 @@ service cloud.firestore {
           isValidId(userId) &&
           isValidId(puzzleId) &&
           request.auth.uid == userId &&
-          existing().uid == request.auth.uid &&
-          exists(/databases/$(database)/documents/users/$(userId))
+          (resource == null || existing().uid == request.auth.uid)
         );
 
         allow list: if (
@@ -295,7 +293,7 @@ service cloud.firestore {
 
     // 5. Collection: /leaderboard_scores/{scoreId}
     match /leaderboard_scores/{scoreId} {
-      allow get: if isValidId(scoreId) && existing().isPublic == true;
+      allow get: if isValidId(scoreId) && (resource == null || existing().isPublic == true);
       allow list: if existing().isPublic == true;
 
       allow create: if (

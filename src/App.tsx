@@ -2052,7 +2052,7 @@ export default function App() {
           <div className="xl:col-span-7 flex flex-col items-center w-full">
             {/* Active Clue Spotlight Bar + Mobile/Desktop Gameplay Controls directly above the Grid */}
             <div
-              className={`w-[calc(100%-20px)] mb-2.5 sm:mb-3 p-3 sm:p-3.5 rounded-xl border ${theme.borderSubtle} ${theme.bgSurface} flex flex-col gap-2.5`}
+              className={`w-[calc(100%-20px)] mb-0 p-3 sm:p-3.5 rounded-t-xl border border-b-0 ${theme.borderSubtle} ${theme.bgSurface} flex flex-col gap-2.5`}
             >
               <div className="flex items-start justify-between gap-2">
                 {/* Previous Clue Button for Quick Mobile/Touch Navigation */}
@@ -2232,11 +2232,11 @@ export default function App() {
             {/* Interactive Crossword Board (20x20 Standard or 8x8 Quick) with Solid Black Crossword Background & 100% Boxes */}
             <div
               ref={gridContainerRef}
-              className={`relative w-[calc(100%-20px)] ${
+              className={`relative w-[calc(100%-20px)] mt-0 ${
                 mobileGridZoomed && gridSize === 20
                   ? 'overflow-auto max-h-[72vh]'
                   : 'aspect-square overflow-hidden'
-              } p-1.5 sm:p-2 rounded-xl border ${theme.borderSubtle} bg-black shadow-sm flex items-center justify-center`}
+              } p-1.5 sm:p-2 rounded-b-xl border ${theme.borderSubtle} bg-black shadow-sm flex items-center justify-center`}
             >
               {/* Hidden Native OS Keyboard Input for Mobile (iOS / Android) & Touch Devices */}
               <input
