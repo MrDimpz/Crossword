@@ -178,8 +178,35 @@ export default function App() {
   const lastKeyHandledTimestampRef = useRef<number>(0);
   const [isNativeKeyboardFocused, setIsNativeKeyboardFocused] =
     useState<boolean>(false);
-  const [mobileGridZoomed, setMobileGridZoomed] = useState<boolean>(false);
   const [showOnScreenKeys, setShowOnScreenKeys] = useState<boolean>(true);
+
+  // Mobile & Touch Grid Zoom state (scale from 1.0 to 3.0 without affecting any other part of the page)
+  const [gridZoom, setGridZoom] = useState<number>(1.0);
+
+  const handleZoomIn = useCallback(() => {
+    soundFX.playClick();
+    setGridZoom((prev) => {
+      if (prev < 1.35) return 1.5;
+      if (prev < 1.85) return 2.0;
+      if (prev < 2.35) return 2.5;
+      return Math.min(3.0, Math.round((prev + 0.5) * 10) / 10);
+    });
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    soundFX.playClick();
+    setGridZoom((prev) => {
+      if (prev <= 1.55) return 1.0;
+      if (prev <= 2.05) return 1.5;
+      if (prev <= 2.55) return 2.0;
+      return Math.max(1.0, Math.round((prev - 0.5) * 10) / 10);
+    });
+  }, []);
+
+  const handleResetZoom = useCallback(() => {
+    soundFX.playClick();
+    setGridZoom(1.0);
+  }, []);
 
   const focusNativeKeyboard = useCallback(() => {
     if (mobileKeyboardInputRef.current) {
@@ -421,6 +448,7 @@ export default function App() {
       setHintBannerMessage(null);
       setVictorySubmitted(false);
       setIsVictoryPopupDismissed(false);
+      setGridZoom(1.0);
 
       // Record initial difficulty base for this puzzle if not yet recorded
       const updatedEasiest = recordEasiestBaseForPuzzle(
@@ -902,6 +930,93 @@ export default function App() {
     },
     []
   );
+
+  // Touch Pinch-to-Zoom handler specifically for the crossword board container
+  // Intercepts 2-finger pinch so the browser never zooms the rest of the page, smoothly scaling only the crossword grid
+  useEffect(() => {
+    const container = gridContainerRef.current;
+    if (!container) return;
+
+    let initialDist = 0;
+    let initialZoomLevel = 1.0;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        // Prevent default browser whole-page pinch zoom
+        e.preventDefault();
+        initialDist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        initialZoomLevel = gridZoom;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && initialDist > 0) {
+        // Prevent default browser whole-page pinch zoom
+        e.preventDefault();
+        const currentDist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        const scale = currentDist / initialDist;
+        const targetZoom = Math.min(3.0, Math.max(1.0, initialZoomLevel * scale));
+        setGridZoom(Math.round(targetZoom * 10) / 10);
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        initialDist = 0;
+      }
+    };
+
+    // Trackpad / Wheel zoom with Ctrl or Meta key on the grid container
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.2 : -0.2;
+        setGridZoom((prev) =>
+          Math.min(3.0, Math.max(1.0, Math.round((prev + delta) * 10) / 10))
+        );
+      }
+    };
+
+    container.addEventListener('touchstart', handleTouchStart, {
+      passive: false,
+    });
+    container.addEventListener('touchmove', handleTouchMove, {
+      passive: false,
+    });
+    container.addEventListener('touchend', handleTouchEnd);
+    container.addEventListener('touchcancel', handleTouchEnd);
+    container.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      container.removeEventListener('touchend', handleTouchEnd);
+      container.removeEventListener('touchcancel', handleTouchEnd);
+      container.removeEventListener('wheel', handleWheel);
+    };
+  }, [gridZoom]);
+
+  // When grid is zoomed in, smoothly keep the focused cell in view within the crossword container
+  useEffect(() => {
+    if (gridZoom > 1.05 && gridContainerRef.current) {
+      const cellEl = document.getElementById(
+        `grid-cell-${focusedCell.row}-${focusedCell.col}`
+      );
+      if (cellEl) {
+        cellEl.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest',
+          inline: 'nearest',
+        });
+      }
+    }
+  }, [focusedCell, gridZoom]);
 
   // Move cursor helper along active word (optionally skipping already-filled cells)
   const advanceCursorInWord = useCallback(
@@ -2175,34 +2290,44 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center gap-1.5 sm:gap-2">
-                  {/* Mobile Zoom Toggle for 20x20 Grid */}
-                  {gridSize === 20 && (
+                  {/* Grid Zoom Controls (zooms only the crossword grid without affecting any other aspect of the page) */}
+                  <div
+                    className={`flex items-center gap-0.5 p-0.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas}`}
+                    title="Crossword grid zoom (or pinch with 2 fingers directly on the grid on mobile)"
+                  >
                     <button
                       type="button"
-                      onClick={() => {
-                        soundFX.playClick();
-                        setMobileGridZoomed((z) => !z);
-                      }}
-                      className={`sm:hidden px-2.5 py-1.5 rounded-lg border ${
-                        mobileGridZoomed
-                          ? `${theme.accentBorder} ${theme.bgElevated}`
-                          : `${theme.borderSubtle} ${theme.bgCanvas}`
-                      } text-xs font-medium flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0`}
-                      title="Toggle 20×20 grid zoom on mobile screens"
+                      onClick={handleZoomOut}
+                      disabled={gridZoom <= 1.0}
+                      className={`p-1 rounded hover:opacity-80 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed ${theme.textPrimary}`}
+                      title="Zoom Out Grid (-)"
+                      aria-label="Zoom out grid"
                     >
-                      {mobileGridZoomed ? (
-                        <>
-                          <ZoomOut className="w-3.5 h-3.5" />
-                          <span>Fit</span>
-                        </>
-                      ) : (
-                        <>
-                          <ZoomIn className="w-3.5 h-3.5" />
-                          <span>Zoom</span>
-                        </>
-                      )}
+                      <ZoomOut className="w-3.5 h-3.5" />
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      onClick={handleResetZoom}
+                      className={`px-1.5 py-0.5 text-[10px] sm:text-xs font-mono-tabular font-semibold rounded cursor-pointer whitespace-nowrap transition-colors ${
+                        gridZoom > 1.0
+                          ? `${theme.accentBg} ${theme.accentText}`
+                          : `${theme.textSecondary} hover:${theme.textPrimary}`
+                      }`}
+                      title="Tap to reset zoom to Fit (100%)"
+                    >
+                      {gridZoom > 1.0 ? `${Math.round(gridZoom * 100)}%` : 'Fit'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleZoomIn}
+                      disabled={gridZoom >= 3.0}
+                      className={`p-1 rounded hover:opacity-80 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed ${theme.textPrimary}`}
+                      title="Zoom In Grid (+)"
+                      aria-label="Zoom in grid"
+                    >
+                      <ZoomIn className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
 
                   {/* Use Device's Own Keyboard Button */}
                   <button
@@ -2232,12 +2357,25 @@ export default function App() {
             {/* Interactive Crossword Board (20x20 Standard or 8x8 Quick) with Solid Black Crossword Background & 100% Boxes */}
             <div
               ref={gridContainerRef}
-              className={`relative w-[calc(100%-20px)] mt-0 ${
-                mobileGridZoomed && gridSize === 20
-                  ? 'overflow-auto max-h-[72vh]'
-                  : 'aspect-square overflow-hidden'
-              } p-1.5 sm:p-2 rounded-b-xl border ${theme.borderSubtle} bg-black shadow-sm flex items-center justify-center`}
+              className={`relative w-[calc(100%-20px)] mt-0 aspect-square max-h-[78vh] ${
+                gridZoom > 1.0
+                  ? 'overflow-auto touch-pan-x touch-pan-y overscroll-contain block'
+                  : 'overflow-hidden flex items-center justify-center'
+              } p-1.5 sm:p-2 rounded-b-xl border ${theme.borderSubtle} bg-black shadow-sm select-none`}
+              style={{
+                WebkitOverflowScrolling: 'touch',
+                touchAction: gridZoom > 1.0 ? 'pan-x pan-y' : 'none',
+              }}
             >
+              {/* Floating Zoom & Pan Indicator Badge when zoomed */}
+              {gridZoom > 1.0 && (
+                <div className="sticky top-2 left-2 z-30 inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/85 border border-amber-500/50 text-amber-300 text-[11px] font-mono-tabular backdrop-blur-sm pointer-events-none shadow-lg">
+                  <ZoomIn className="w-3 h-3 text-amber-400" />
+                  <span>{Math.round(gridZoom * 100)}%</span>
+                  <span className="text-[10px] opacity-75">· Drag to pan</span>
+                </div>
+              )}
+
               {/* Hidden Native OS Keyboard Input for Mobile (iOS / Android) & Touch Devices */}
               <input
                 ref={mobileKeyboardInputRef}
@@ -2264,12 +2402,18 @@ export default function App() {
               />
 
               <div
-                className={`relative z-10 ${
-                  mobileGridZoomed && gridSize === 20
-                    ? 'w-[560px] h-[560px] shrink-0'
-                    : 'w-full h-full'
-                } grid border ${theme.borderSubtle}`}
+                className="relative z-10 grid border border-slate-700/60 m-auto shrink-0 transition-[width,height] duration-150 ease-out"
                 style={{
+                  width:
+                    gridZoom > 1.0
+                      ? `${Math.round(gridZoom * 100)}%`
+                      : '100%',
+                  height:
+                    gridZoom > 1.0
+                      ? `${Math.round(gridZoom * 100)}%`
+                      : '100%',
+                  minWidth: '100%',
+                  minHeight: '100%',
                   gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
                   gridTemplateRows: `repeat(${gridSize}, minmax(0, 1fr))`,
                 }}
@@ -2309,6 +2453,7 @@ export default function App() {
                     return (
                       <button
                         key={`${rIdx}-${cIdx}`}
+                        id={`grid-cell-${rIdx}-${cIdx}`}
                         type="button"
                         role="gridcell"
                         aria-label={`Row ${rIdx + 1} Column ${cIdx + 1}${
@@ -2335,9 +2480,9 @@ export default function App() {
                       >
                         {cell.number !== undefined && (
                           <span
-                            className={`pointer-events-none absolute z-10 ${
+                            className={`pointer-events-none absolute z-20 ${
                               gridSize === 8
-                                ? 'top-[2px] left-[4px] text-[10px] sm:text-xs'
+                                ? 'top-[2px] left-[3.5px] text-[10px] sm:text-xs'
                                 : 'top-[1px] left-[1.5px] text-[7px] sm:text-[9px]'
                             } leading-none font-mono-tabular font-semibold ${
                               isFocused ? 'opacity-95' : 'opacity-80'
@@ -2349,27 +2494,39 @@ export default function App() {
 
                         {isRevealed && (
                           <span
-                            className="pointer-events-none absolute z-10 top-0 right-0 w-0 h-0 border-t-[6px] border-t-emerald-500 border-l-[6px] border-l-transparent"
+                            className="pointer-events-none absolute z-20 top-0 right-0 w-0 h-0 border-t-[6px] border-t-emerald-500 border-l-[6px] border-l-transparent"
                             title="Anchor letter revealed"
                           />
                         )}
 
                         {hasError && (
                           <span
-                            className="pointer-events-none absolute z-10 inset-0 border-b-2 border-red-500 rotate-45 scale-125"
+                            className="pointer-events-none absolute z-20 inset-0 border-b-2 border-red-500 rotate-45 scale-125"
                             aria-hidden="true"
                           />
                         )}
 
-                        <span
-                          className={`relative z-10 ${
-                            gridSize === 8
-                              ? 'text-lg sm:text-xl md:text-2xl leading-none pt-1.5'
-                              : 'text-[11px] sm:text-sm md:text-[15px] leading-none pt-1'
-                          }`}
-                        >
-                          {val}
-                        </span>
+                        {/* Letter scaled to exactly 80% of box size via viewBox text */}
+                        {val ? (
+                          <svg
+                            viewBox="0 0 100 100"
+                            className="absolute inset-0 w-full h-full pointer-events-none select-none z-10"
+                            aria-hidden="true"
+                          >
+                            <text
+                              x="50"
+                              y="54"
+                              textAnchor="middle"
+                              dominantBaseline="central"
+                              fontSize="80"
+                              fontWeight="700"
+                              fontFamily="JetBrains Mono, monospace"
+                              fill="currentColor"
+                            >
+                              {val}
+                            </text>
+                          </svg>
+                        ) : null}
                       </button>
                     );
                   })

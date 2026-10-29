@@ -787,26 +787,138 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                 <span>03. Board Surface Palette</span>
               </h3>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              {(Object.keys(VISUAL_THEMES) as VisualThemeId[]).map((tKey) => {
-                const tObj = VISUAL_THEMES[tKey];
-                const active = visualThemeId === tKey;
+            <div className="grid grid-cols-2 gap-2.5">
+              {(
+                [
+                  {
+                    id: 'observatory' as VisualThemeId,
+                    name: 'Velvet Observatory',
+                    subtitle: 'Deep navy & starlight amber',
+                    bg: 'bg-[#0A192F]',
+                    border: 'border-[#233554]',
+                    activeBorder:
+                      'border-[#F59E0B] ring-2 ring-[#F59E0B] shadow-lg shadow-amber-500/10',
+                    titleColor: 'text-[#F8FAFC]',
+                    subtitleColor: 'text-[#94A3B8]',
+                    badgeBg: 'bg-[#F59E0B] text-[#0A192F]',
+                    swatches: [
+                      { bg: 'bg-[#152A4A]', border: 'border-[#233554]' },
+                      { bg: 'bg-[#264673]', border: 'border-blue-400/40' },
+                      { bg: 'bg-[#F59E0B]', border: 'border-amber-400' },
+                      { bg: 'bg-[#050D1A]', border: 'border-slate-900' },
+                    ],
+                  },
+                  {
+                    id: 'editorial' as VisualThemeId,
+                    name: 'Broadsheet Ink',
+                    subtitle: 'Crisp newsprint & charcoal',
+                    bg: 'bg-[#FFFFFF]',
+                    border: 'border-[#CBD5E1]',
+                    activeBorder:
+                      'border-[#0F172A] ring-2 ring-[#0F172A] shadow-lg shadow-slate-900/10',
+                    titleColor: 'text-[#0F172A]',
+                    subtitleColor: 'text-[#64748B]',
+                    badgeBg: 'bg-[#0F172A] text-white',
+                    swatches: [
+                      { bg: 'bg-[#FFFFFF]', border: 'border-slate-300' },
+                      { bg: 'bg-[#FEF3C7]', border: 'border-amber-300' },
+                      { bg: 'bg-[#D97706]', border: 'border-amber-600' },
+                      { bg: 'bg-[#1E293B]', border: 'border-slate-800' },
+                    ],
+                  },
+                  {
+                    id: 'botanical' as VisualThemeId,
+                    name: 'Conservatory Felt',
+                    subtitle: 'Classic tournament green & ivory',
+                    bg: 'bg-[#0B3B24]',
+                    border: 'border-[#1E6B45]',
+                    activeBorder:
+                      'border-[#10B981] ring-2 ring-[#10B981] shadow-lg shadow-emerald-500/10',
+                    titleColor: 'text-[#F8FAFC]',
+                    subtitleColor: 'text-[#A7F3D0]',
+                    badgeBg: 'bg-[#10B981] text-[#062214]',
+                    swatches: [
+                      { bg: 'bg-[#F8FAFC]', border: 'border-slate-200' },
+                      { bg: 'bg-[#D1FAE5]', border: 'border-emerald-300' },
+                      { bg: 'bg-[#10B981]', border: 'border-emerald-400' },
+                      { bg: 'bg-[#062214]', border: 'border-emerald-950' },
+                    ],
+                  },
+                  {
+                    id: 'mahogany' as VisualThemeId,
+                    name: 'Archive Study',
+                    subtitle: 'Deep espresso & parchment',
+                    bg: 'bg-[#261815]',
+                    border: 'border-[#543831]',
+                    activeBorder:
+                      'border-[#DC2626] ring-2 ring-[#DC2626] shadow-lg shadow-red-500/10',
+                    titleColor: 'text-[#FAF5F0]',
+                    subtitleColor: 'text-[#BFA896]',
+                    badgeBg: 'bg-[#DC2626] text-white',
+                    swatches: [
+                      { bg: 'bg-[#FAF5F0]', border: 'border-stone-300' },
+                      { bg: 'bg-[#FDE68A]', border: 'border-amber-300' },
+                      { bg: 'bg-[#DC2626]', border: 'border-red-500' },
+                      { bg: 'bg-[#160D0B]', border: 'border-stone-900' },
+                    ],
+                  },
+                ] as const
+              ).map((pal) => {
+                const active = visualThemeId === pal.id;
                 return (
                   <button
-                    key={tKey}
+                    key={pal.id}
                     type="button"
-                    onClick={() => onSelectVisualTheme(tKey)}
-                    className={`px-3 py-2 rounded-lg border text-left transition-colors cursor-pointer ${
+                    onClick={() => onSelectVisualTheme(pal.id)}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2.5 ${pal.bg} ${
                       active
-                        ? `${theme.accentBorder} ${theme.bgElevated}`
-                        : `${theme.borderSubtle} hover:opacity-85`
+                        ? pal.activeBorder
+                        : `${pal.border} opacity-90 hover:opacity-100`
                     }`}
                   >
-                    <div className="text-xs font-semibold whitespace-nowrap truncate">
-                      {tObj.name}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div
+                          className={`text-xs font-bold whitespace-nowrap truncate ${pal.titleColor}`}
+                        >
+                          {pal.name}
+                        </div>
+                        <div
+                          className={`text-[11px] truncate mt-0.5 ${pal.subtitleColor}`}
+                        >
+                          {pal.subtitle}
+                        </div>
+                      </div>
+                      {active ? (
+                        <span
+                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono-tabular font-bold shrink-0 ${pal.badgeBg}`}
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Active</span>
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-[10px] font-mono-tabular opacity-60 shrink-0 ${pal.subtitleColor}`}
+                        >
+                          Select
+                        </span>
+                      )}
                     </div>
-                    <div className={`text-[11px] ${theme.textMuted} truncate`}>
-                      {tObj.subtitle}
+
+                    {/* Palette Swatch Preview Strip */}
+                    <div className="flex items-center gap-1.5 pt-1.5 border-t border-current/10">
+                      {pal.swatches.map((sw, sIdx) => (
+                        <span
+                          key={sIdx}
+                          className={`w-3.5 h-3.5 rounded-full border shadow-inner ${sw.bg} ${sw.border}`}
+                          aria-hidden="true"
+                        />
+                      ))}
+                      <span
+                        className={`text-[10px] font-mono-tabular ml-auto opacity-75 ${pal.subtitleColor}`}
+                      >
+                        {active ? 'Selected' : 'Palette'}
+                      </span>
                     </div>
                   </button>
                 );
