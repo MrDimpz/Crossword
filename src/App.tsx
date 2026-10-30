@@ -219,9 +219,18 @@ export default function App() {
     });
   }, []);
 
+  const gridZoomRef = useRef<number>(1.0);
+  useEffect(() => {
+    gridZoomRef.current = gridZoom;
+  }, [gridZoom]);
+
   const handleResetZoom = useCallback(() => {
     soundFX.playClick();
-    setGridZoom((prev) => (prev > 1.05 ? 1.0 : 1.5));
+    setGridZoom(1.0);
+    gridZoomRef.current = 1.0;
+    if (gridContainerRef.current) {
+      gridContainerRef.current.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+    }
   }, []);
 
   const lastLetterCoordsRef = useRef<{ row: number; col: number } | null>(null);
@@ -479,6 +488,7 @@ export default function App() {
   const [unlockedBreakdowns, setUnlockedBreakdowns] = useState<Set<string>>(
     new Set()
   );
+  const countedBreakdownsRef = useRef<Set<string>>(new Set());
   const [completedClueIds, setCompletedClueIds] = useState<Set<string>>(
     new Set()
   );
@@ -517,6 +527,7 @@ export default function App() {
       setRevealedCells(new Set());
       setErrorCells(new Set());
       setUnlockedBreakdowns(new Set());
+      countedBreakdownsRef.current = new Set();
       setCompletedClueIds(new Set());
       setElapsedSeconds(0);
       setHintsUsed(0);
@@ -1045,6 +1056,10 @@ export default function App() {
 
     let initialDist = 0;
     let initialZoomLevel = 1.0;
+    let initialScrollLeft = 0;
+    let initialScrollTop = 0;
+    let pinchMidX = 0;
+    let pinchMidY = 0;
 
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 2) {
@@ -1054,7 +1069,14 @@ export default function App() {
           e.touches[0].clientX - e.touches[1].clientX,
           e.touches[0].clientY - e.touches[1].clientY
         );
-        initialZoomLevel = gridZoom;
+        initialZoomLevel = gridZoomRef.current;
+        const rect = container.getBoundingClientRect();
+        pinchMidX =
+          (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+        pinchMidY =
+          (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+        initialScrollLeft = container.scrollLeft;
+        initialScrollTop = container.scrollTop;
         setIsPinching(true);
       }
     };
@@ -1069,8 +1091,19 @@ export default function App() {
         );
         const scale = currentDist / initialDist;
         // Smooth continuous scaling without stepped increments
-        const targetZoom = Math.min(3.0, Math.max(1.0, initialZoomLevel * scale));
+        const targetZoom = Math.min(
+          3.0,
+          Math.max(1.0, initialZoomLevel * scale)
+        );
+        gridZoomRef.current = targetZoom;
         setGridZoom(targetZoom);
+
+        // Keep pinch focal point anchored smoothly under fingers
+        const zoomRatio = targetZoom / initialZoomLevel;
+        container.scrollLeft =
+          (initialScrollLeft + pinchMidX) * zoomRatio - pinchMidX;
+        container.scrollTop =
+          (initialScrollTop + pinchMidY) * zoomRatio - pinchMidY;
       }
     };
 
@@ -1086,9 +1119,12 @@ export default function App() {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const delta = e.deltaY < 0 ? 0.08 : -0.08;
-        setGridZoom((prev) =>
-          Math.min(3.0, Math.max(1.0, prev + delta))
+        const nextZoom = Math.min(
+          3.0,
+          Math.max(1.0, gridZoomRef.current + delta)
         );
+        gridZoomRef.current = nextZoom;
+        setGridZoom(nextZoom);
       }
     };
 
@@ -1109,7 +1145,7 @@ export default function App() {
       container.removeEventListener('touchcancel', handleTouchEnd);
       container.removeEventListener('wheel', handleWheel);
     };
-  }, [gridZoom]);
+  }, [gameState]);
 
   // When grid is zoomed in, smoothly keep the focused cell in view within the crossword container
   useEffect(() => {
@@ -1573,9 +1609,25 @@ export default function App() {
   // 4-Tier User-Friendly Hint System Actions
   const handleHintTier1Breakdown = () => {
     if (!activeClue) return;
+    const isCurrentlyVisible = unlockedBreakdowns.has(activeClue.id);
+
+    if (isCurrentlyVisible) {
+      soundFX.playClick();
+      setUnlockedBreakdowns((prev) => {
+        const next = new Set(prev);
+        next.delete(activeClue.id);
+        return next;
+      });
+      setHintBannerMessage((prev) =>
+        prev && prev.startsWith('Wordplay & Context') ? null : prev
+      );
+      return;
+    }
+
     soundFX.playHintUsed();
-    if (!unlockedBreakdowns.has(activeClue.id)) {
-      setUnlockedBreakdowns((prev) => new Set(prev).add(activeClue.id));
+    setUnlockedBreakdowns((prev) => new Set(prev).add(activeClue.id));
+    if (!countedBreakdownsRef.current.has(activeClue.id)) {
+      countedBreakdownsRef.current.add(activeClue.id);
       setHintsUsed((h) => h + 1);
     }
     setHintBannerMessage(
@@ -2214,20 +2266,22 @@ export default function App() {
                 <span>Skip Filled: {skipFilledCells ? 'ON' : 'OFF'}</span>
               </button>
 
-              {/* Fit / Zoom Reset Button */}
+              {/* Reset 100% Zoom Button */}
               <button
                 type="button"
                 onClick={handleResetZoom}
                 className={`px-2 sm:px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
-                  gridZoom > 1.05
+                  gridZoom > 1.02
                     ? `${theme.accentBg} ${theme.accentText}`
                     : `${theme.borderSubtle} ${theme.bgCanvas} ${theme.textSecondary} hover:${theme.textPrimary}`
                 }`}
-                title="Reset crossword grid zoom to Fit"
+                title="Reset crossword grid zoom to 100%"
               >
-                <ZoomIn className="w-3.5 h-3.5" />
+                <RotateCcw className="w-3.5 h-3.5" />
                 <span>
-                  {gridZoom > 1.05 ? `Fit (${Math.round(gridZoom * 100)}%)` : 'Fit'}
+                  {gridZoom > 1.02
+                    ? `Reset (${Math.round(gridZoom * 100)}%)`
+                    : 'Reset'}
                 </span>
               </button>
 
@@ -2458,14 +2512,10 @@ export default function App() {
             {/* Interactive Crossword Board (20x20 Standard or 8x8 Quick) with Solid Black Crossword Background & 100% Boxes */}
             <div
               ref={gridContainerRef}
-              className={`relative w-full sm:w-[calc(100%-20px)] mt-0 aspect-square max-h-[85vh] ${
-                gridZoom > 1.0
-                  ? 'overflow-auto touch-pan-x touch-pan-y overscroll-contain block'
-                  : 'overflow-hidden flex items-center justify-center'
-              } p-1 sm:p-2 rounded-none sm:rounded-b-xl border-x-0 sm:border-x border ${theme.borderSubtle} bg-black shadow-sm select-none`}
+              className={`relative w-full sm:w-[calc(100%-20px)] mt-0 aspect-square max-h-[85vh] overflow-auto overscroll-contain block p-1 sm:p-2 rounded-none sm:rounded-b-xl border-x-0 sm:border-x border ${theme.borderSubtle} bg-black shadow-sm select-none`}
               style={{
                 WebkitOverflowScrolling: 'touch',
-                touchAction: 'none',
+                touchAction: gridZoom > 1.01 ? 'pan-x pan-y' : 'pan-y',
               }}
             >
               {/* Floating Zoom & Pan Indicator Badge when zoomed (hidden on mobile view) */}
@@ -2523,11 +2573,11 @@ export default function App() {
                 style={{
                   width:
                     gridZoom > 1.0
-                      ? `${Math.round(gridZoom * 100)}%`
+                      ? `${(gridZoom * 100).toFixed(2)}%`
                       : '100%',
                   height:
                     gridZoom > 1.0
-                      ? `${Math.round(gridZoom * 100)}%`
+                      ? `${(gridZoom * 100).toFixed(2)}%`
                       : '100%',
                   minWidth: '100%',
                   minHeight: '100%',
@@ -2593,7 +2643,7 @@ export default function App() {
                           // Focus native mobile keyboard synchronously on cell tap
                           focusNativeKeyboard();
                         }}
-                        className={`relative w-full h-full ${bgClass} ${textClass} border-[0.5px] border-slate-500/35 flex items-center justify-center font-mono-tabular font-bold transition-colors duration-75 focus:outline-none cursor-pointer overflow-hidden touch-manipulation`}
+                        className={`relative w-full h-full ${bgClass} ${textClass} border-[0.5px] border-slate-500/35 flex items-center justify-center font-mono-tabular font-bold transition-colors duration-75 focus:outline-none cursor-pointer overflow-hidden`}
                       >
                         {cell.number !== undefined && (
                           <span
@@ -2712,15 +2762,24 @@ export default function App() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <button
                   type="button"
+                  aria-pressed={
+                    activeClue ? unlockedBreakdowns.has(activeClue.id) : false
+                  }
                   onClick={handleHintTier1Breakdown}
-                  className={`p-2.5 rounded-lg border ${theme.borderSubtle} ${theme.bgCanvas} hover:opacity-90 text-left transition-opacity cursor-pointer flex flex-col justify-between`}
+                  className={`p-2.5 rounded-lg border ${
+                    activeClue && unlockedBreakdowns.has(activeClue.id)
+                      ? `${theme.accentBorder} ${theme.bgElevated}`
+                      : `${theme.borderSubtle} ${theme.bgCanvas}`
+                  } hover:opacity-90 text-left transition-colors cursor-pointer flex flex-col justify-between`}
                 >
                   <div className="flex items-center justify-between text-xs font-semibold mb-1">
                     <span>1. Wordplay</span>
                     <BookOpen className="w-3.5 h-3.5 opacity-70" />
                   </div>
                   <div className={`text-[11px] ${theme.textMuted} leading-tight`}>
-                    Cryptic &amp; context guide
+                    {activeClue && unlockedBreakdowns.has(activeClue.id)
+                      ? 'Hide cryptic guide'
+                      : 'Cryptic & context guide'}
                   </div>
                 </button>
 
