@@ -113,3 +113,18 @@
 .clue-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(148, 163, 184, 0.55);
 }
+
+@keyframes spin-vertical-3d {
+  0% {
+    transform: perspective(300px) rotateY(0deg);
+  }
+  100% {
+    transform: perspective(300px) rotateY(360deg);
+  }
+}
+
+.animate-spin-3d {
+  animation: spin-vertical-3d 6s linear infinite;
+  transform-style: preserve-3d;
+}
+

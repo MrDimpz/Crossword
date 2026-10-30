@@ -57,7 +57,47 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     { answer: 'LEXICON', standardClue: 'The vocabulary of a person, language, or branch of knowledge', crypticClue: 'Dictionary nice ox let mix (7)' },
   ]);
 
-  const [activeTab, setActiveTab] = useState<'custom' | 'catalog' | 'leaderboard' | 'security'>('custom');
+  const [activeTab, setActiveTab] = useState<'custom' | 'catalog' | 'leaderboard' | 'security' | 'logo'>('custom');
+  const [customLogoInput, setCustomLogoInput] = useState<string>(() => {
+    try {
+      return localStorage.getItem('cruciverbalist_victory_logo_url') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const handleSaveCustomLogo = (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      localStorage.setItem('cruciverbalist_victory_logo_url', customLogoInput.trim());
+      soundFX.playVictory();
+      setSuccessMsg('Custom animated GIF / logo successfully updated!');
+      window.dispatchEvent(new Event('storage'));
+    } catch {
+      setErrorMsg('Failed to save custom logo.');
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (uploadEvent) => {
+      const res = uploadEvent.target?.result as string;
+      if (res) {
+        setCustomLogoInput(res);
+        try {
+          localStorage.setItem('cruciverbalist_victory_logo_url', res);
+          soundFX.playVictory();
+          setSuccessMsg('Animated GIF uploaded and applied successfully!');
+          window.dispatchEvent(new Event('storage'));
+        } catch {
+          setErrorMsg('Failed to store uploaded GIF.');
+        }
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   useEffect(() => {
     if (isOpen) {
@@ -335,6 +375,18 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                   <Key className="w-3.5 h-3.5" />
                   <span>Admin Credentials</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('logo')}
+                  className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    activeTab === 'logo'
+                      ? `${theme.accentBg} ${theme.accentText}`
+                      : `${theme.bgElevated} border ${theme.borderSubtle}`
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Custom Animated GIF</span>
+                </button>
               </div>
 
               {/* Tab 1: Custom Crossword Studio */}
@@ -549,6 +601,56 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     Update Admin Password
                   </button>
                 </form>
+              )}
+
+              {/* Tab 5: Custom Animated GIF / Logo */}
+              {activeTab === 'logo' && (
+                <div className="max-w-md mx-auto py-4 space-y-5 text-center">
+                  <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto text-amber-500">
+                    <Sparkles className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-bold">Custom Animated GIF or Logo</h3>
+                    <p className={`text-xs ${theme.textMuted}`}>
+                      Upload any animated GIF file or paste an image/GIF URL to use as the spinning 3D logo in the puzzle completed popup.
+                    </p>
+                  </div>
+                  <form onSubmit={handleSaveCustomLogo} className="space-y-4 text-left">
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Upload GIF / Image File</label>
+                      <input
+                        type="file"
+                        accept="image/*,.gif"
+                        onChange={handleFileUpload}
+                        className={`w-full px-3 py-2 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} text-xs file:mr-4 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-500/20 file:text-amber-400 hover:file:bg-amber-500/30 cursor-pointer`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Or Paste Image / GIF URL</label>
+                      <input
+                        type="url"
+                        value={customLogoInput}
+                        onChange={(e) => setCustomLogoInput(e.target.value)}
+                        placeholder="https://example.com/animation.gif"
+                        className={`w-full px-3.5 py-2.5 rounded-xl border ${theme.borderSubtle} ${theme.bgCanvas} text-xs focus:outline-none`}
+                      />
+                    </div>
+                    {customLogoInput && (
+                      <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 flex items-center justify-center gap-4">
+                        <div className="w-16 h-16 rounded-full overflow-hidden border-2 border-amber-400 animate-spin-3d">
+                          <img src={customLogoInput} alt="Preview" className="w-full h-full object-cover" />
+                        </div>
+                        <span className="text-xs font-semibold text-amber-400">Preview (Spinning 3D)</span>
+                      </div>
+                    )}
+                    <button
+                      type="submit"
+                      className={`w-full py-3 rounded-xl font-bold text-xs ${theme.accentBg} ${theme.accentText} cursor-pointer`}
+                    >
+                      Save &amp; Apply Custom Animated GIF
+                    </button>
+                  </form>
+                </div>
               )}
             </div>
           )}

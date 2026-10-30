@@ -221,7 +221,63 @@ export default function App() {
 
   const handleResetZoom = useCallback(() => {
     soundFX.playClick();
-    setGridZoom(1.0);
+    setGridZoom((prev) => (prev > 1.05 ? 1.0 : 1.5));
+  }, []);
+
+  const lastLetterCoordsRef = useRef<{ row: number; col: number } | null>(null);
+
+  const triggerConfettiAtCell = useCallback((row: number, col: number) => {
+    try {
+      const el = document.getElementById(`grid-cell-${row}-${col}`);
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        const x = (rect.left + rect.width / 2) / window.innerWidth;
+        const y = (rect.top + rect.height / 2) / window.innerHeight;
+        confetti({
+          particleCount: 35,
+          spread: 75,
+          origin: { x, y },
+          zIndex: 9999,
+          disableForReducedMotion: false,
+        });
+      } else {
+        confetti({
+          particleCount: 30,
+          spread: 70,
+          origin: { x: 0.5, y: 0.6 },
+          zIndex: 9999,
+          disableForReducedMotion: false,
+        });
+      }
+    } catch {
+      // fallback
+    }
+  }, []);
+
+  const [victoryLogoUrl, setVictoryLogoUrl] = useState<string>(() => {
+    try {
+      return (
+        localStorage.getItem('cruciverbalist_victory_logo_url') ||
+        '/assets/aistudio/3d_logo_944e5372.png'
+      );
+    } catch {
+      return '/assets/aistudio/3d_logo_944e5372.png';
+    }
+  });
+
+  useEffect(() => {
+    const handleStorage = () => {
+      try {
+        const stored = localStorage.getItem('cruciverbalist_victory_logo_url');
+        if (stored) {
+          setVictoryLogoUrl(stored);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
   const focusNativeKeyboard = useCallback(() => {
@@ -845,6 +901,9 @@ export default function App() {
       }
       if (complete && !completedClueIds.has(clue.id)) {
         newlySolved.push(clue.id);
+        const lastR = clue.direction === 'across' ? clue.row : clue.row + clue.length - 1;
+        const lastC = clue.direction === 'across' ? clue.col + clue.length - 1 : clue.col;
+        lastLetterCoordsRef.current = { row: lastR, col: lastC };
       }
     }
 
@@ -856,6 +915,12 @@ export default function App() {
       });
       if (!stats.isComplete) {
         soundFX.playWordComplete();
+        const coords = lastLetterCoordsRef.current;
+        if (coords) {
+          triggerConfettiAtCell(coords.row, coords.col);
+        } else {
+          triggerConfettiAtCell(0, 0);
+        }
       }
     }
   }, [
@@ -864,6 +929,7 @@ export default function App() {
     completedClueIds,
     gameState,
     stats.isComplete,
+    triggerConfettiAtCell,
   ]);
 
   // Multi-stage celebratory confetti burst using canvas-confetti (guaranteed high z-index & reduced-motion override)
@@ -2392,14 +2458,14 @@ export default function App() {
             {/* Interactive Crossword Board (20x20 Standard or 8x8 Quick) with Solid Black Crossword Background & 100% Boxes */}
             <div
               ref={gridContainerRef}
-              className={`relative w-[calc(100%-20px)] mt-0 aspect-square max-h-[78vh] ${
+              className={`relative w-full sm:w-[calc(100%-20px)] mt-0 aspect-square max-h-[85vh] ${
                 gridZoom > 1.0
                   ? 'overflow-auto touch-pan-x touch-pan-y overscroll-contain block'
                   : 'overflow-hidden flex items-center justify-center'
-              } p-1.5 sm:p-2 rounded-b-xl border ${theme.borderSubtle} bg-black shadow-sm select-none`}
+              } p-1 sm:p-2 rounded-none sm:rounded-b-xl border-x-0 sm:border-x border ${theme.borderSubtle} bg-black shadow-sm select-none`}
               style={{
                 WebkitOverflowScrolling: 'touch',
-                touchAction: gridZoom > 1.0 ? 'pan-x pan-y' : 'none',
+                touchAction: 'none',
               }}
             >
               {/* Floating Zoom & Pan Indicator Badge when zoomed (hidden on mobile view) */}
@@ -2897,11 +2963,16 @@ export default function App() {
         {/* Pause Modal */}
         {gameState === 'PAUSED' && (
           <div
-            className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/70"
+            className="fixed inset-0 z-40 flex flex-col items-center justify-center p-4 bg-black/70 overflow-y-auto"
             role="dialog"
             aria-modal="true"
             aria-labelledby="pause-modal-title"
           >
+            {/* Logo above pause popup */}
+            <div className="w-28 h-28 overflow-hidden animate-spin-3d mb-4 shrink-0">
+              <img src={victoryLogoUrl} alt="Logo" className="w-full h-full object-cover" />
+            </div>
+
             <div
               className={`relative w-full max-w-md p-6 pt-8 rounded-2xl border ${theme.borderSubtle} ${theme.bgSurface} ${theme.textPrimary} text-center space-y-5 shadow-xl`}
             >
@@ -2977,6 +3048,11 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {/* Logo below pause popup */}
+            <div className="w-28 h-28 overflow-hidden animate-spin-3d mt-4 shrink-0" style={{ animationDirection: 'reverse', animationDuration: '7s' }}>
+              <img src={victoryLogoUrl} alt="Logo" className="w-full h-full object-cover" />
+            </div>
           </div>
         )}
 
@@ -3005,7 +3081,7 @@ export default function App() {
                 <X className="w-4 h-4" />
               </button>
 
-              {/* Animated Celebration Header */}
+              {/* Animated Celebration Header with Flanking 3D Spinning Logos */}
               <div className="text-center space-y-2 relative">
                 <div className="inline-flex items-center justify-center relative">
                   <span
@@ -3025,12 +3101,30 @@ export default function App() {
                     <Sparkles className="w-4 h-4" />
                   </button>
                 </div>
-                <h2
-                  id="victory-modal-title"
-                  className="text-3xl font-bold font-display"
-                >
-                  Puzzle Solved!
-                </h2>
+
+                <div className="flex items-center justify-center gap-3 sm:gap-4 my-1">
+                  <div className="w-[142px] h-[142px] overflow-hidden animate-spin-3d shrink-0">
+                    <img
+                      src={victoryLogoUrl}
+                      alt="3D Logo"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <h2
+                    id="victory-modal-title"
+                    className="text-2xl sm:text-3xl font-bold font-display"
+                  >
+                    Puzzle Solved!
+                  </h2>
+                  <div className="w-[142px] h-[142px] overflow-hidden animate-spin-3d shrink-0" style={{ animationDirection: 'reverse', animationDuration: '7s' }}>
+                    <img
+                      src={victoryLogoUrl}
+                      alt="3D Logo"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                </div>
+
                 <p className={`text-sm ${theme.textSecondary}`}>
                   {activePuzzle.title} · {activePuzzle.archiveDate} ·{' '}
                   {activePuzzle.themeName}
