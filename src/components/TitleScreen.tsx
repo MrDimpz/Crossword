@@ -861,6 +861,26 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                       { bg: 'bg-[#DC2626]', border: 'border-red-500' },
                       { bg: 'bg-[#160D0B]', border: 'border-stone-900' },
                     ],
+                    spanClass: '',
+                  },
+                  {
+                    id: 'missing-piece' as VisualThemeId,
+                    name: 'The Missing Piece',
+                    subtitle: 'Royal purple, white & gold · Brand signature',
+                    bg: 'bg-[#360B59]',
+                    border: 'border-[#6B21A8]',
+                    activeBorder:
+                      'border-[#EAB308] ring-2 ring-[#EAB308] shadow-lg shadow-yellow-500/15',
+                    titleColor: 'text-[#FAF5FF]',
+                    subtitleColor: 'text-[#E9D5FF]',
+                    badgeBg: 'bg-[#EAB308] text-[#1E0836]',
+                    swatches: [
+                      { bg: 'bg-[#FFFFFF]', border: 'border-purple-200' },
+                      { bg: 'bg-[#FEF08A]', border: 'border-yellow-400' },
+                      { bg: 'bg-[#EAB308]', border: 'border-yellow-500' },
+                      { bg: 'bg-[#24073D]', border: 'border-purple-900' },
+                    ],
+                    spanClass: 'col-span-2',
                   },
                 ] as const
               ).map((pal) => {
@@ -870,7 +890,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                     key={pal.id}
                     type="button"
                     onClick={() => onSelectVisualTheme(pal.id)}
-                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2.5 ${pal.bg} ${
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2.5 ${pal.id === 'missing-piece' ? 'col-span-2' : ''} ${pal.bg} ${
                       active
                         ? pal.activeBorder
                         : `${pal.border} opacity-90 hover:opacity-100`

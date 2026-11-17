@@ -104,11 +104,6 @@ export default function App() {
   const [userGrid, setUserGrid] = useState<string[][]>(() =>
     Array.from({ length: 20 }, () => Array.from({ length: 20 }, () => ''))
   );
-
-  // Check if user has started solving by entering any letters
-  const hasUserStartedSolving = useMemo(() => {
-    return userGrid.some((row) => row.some((cell) => cell !== ''));
-  }, [userGrid]);
   const [visualThemeId, setVisualThemeId] =
     useState<VisualThemeId>('observatory');
   const [clueDifficulty, setClueDifficulty] =
@@ -456,31 +451,29 @@ export default function App() {
     return easiestBaseByPuzzle[activePuzzle.id] || clueDifficulty;
   }, [easiestBaseByPuzzle, activePuzzle.id, clueDifficulty]);
 
-  // Update difficulty and lock in the easiest base chosen for the active puzzle (both locally and in Cloud if signed in)
+  // Update difficulty at any time during gameplay and lock scoring to the easiest mode chosen for the active puzzle
   const handleChangeClueDifficulty = useCallback(
     (newDiff: ClueDifficulty, targetPuzzleId?: string) => {
-      if (hasUserStartedSolving) {
-        setHintBannerMessage(
-          'Clue difficulty cannot be changed after you have started entering letters to prevent cheating!'
-        );
-        soundFX.playError();
-        return;
-      }
       soundFX.playClick();
       setClueDifficulty(newDiff);
       const pid = targetPuzzleId || activePuzzle.id;
       const updatedEasiest = recordEasiestBaseForPuzzle(pid, newDiff);
-      setEasiestBaseByPuzzle((prev) => ({
-        ...prev,
-        [pid]: updatedEasiest,
-      }));
+      setEasiestBaseByPuzzle((prev) => {
+        const currentBest = prev[pid]
+          ? getEasierDifficulty(prev[pid], updatedEasiest)
+          : updatedEasiest;
+        return {
+          ...prev,
+          [pid]: currentBest,
+        };
+      });
       if (currentUser) {
         syncPuzzleProgressToCloud(currentUser, pid, updatedEasiest, false).catch(
           (err) => console.error('Cloud progress sync error:', err)
         );
       }
     },
-    [activePuzzle.id, currentUser, hasUserStartedSolving]
+    [activePuzzle.id, currentUser]
   );
 
   const [revealedCells, setRevealedCells] = useState<Set<string>>(new Set());
@@ -738,10 +731,12 @@ export default function App() {
     let totalWordPoints = 0;
     let maxPossibleWordPoints = 0;
 
+    // Lock scoring to the easiest difficulty mode chosen on this puzzle
+    const lockedPtsPerLetter =
+      LETTER_POINTS_PER_DIFFICULTY[easiestBaseForActivePuzzle] || 10;
+
     for (const clue of allClues) {
-      const viewedDiff = clueViewedDifficulties[clue.id] || easiestBaseForActivePuzzle;
-      const ptsPerLetter = LETTER_POINTS_PER_DIFFICULTY[viewedDiff] || 10;
-      maxPossibleWordPoints += clue.length * 15; // 15 pts/letter on hard
+      maxPossibleWordPoints += clue.length * lockedPtsPerLetter;
 
       let wordCorrect = true;
       for (let i = 0; i < clue.length; i++) {
@@ -754,7 +749,7 @@ export default function App() {
       }
       if (wordCorrect) {
         solvedWords++;
-        totalWordPoints += clue.length * ptsPerLetter;
+        totalWordPoints += clue.length * lockedPtsPerLetter;
       }
     }
 
@@ -2552,15 +2547,15 @@ export default function App() {
                 className="pointer-events-none absolute inset-0 bg-black crossword-board-bg"
               />
 
-              {/* 3D Logo Background between solid black background and grid (10% opacity) */}
+              {/* Single Large 3D Logo Background between solid black background and grid (40% opacity) */}
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute -inset-[15px] flex items-center justify-center select-none"
+                className="pointer-events-none absolute inset-0 overflow-hidden flex items-center justify-center select-none"
               >
                 <img
-                  src="/assets/aistudio/Gemini_Generated_Image_wsrnmwsrnmwsrnmw_7fed61a6.jpg"
+                  src="/assets/aistudio/3d_logo_944e5372.png"
                   alt=""
-                  className="w-full h-full object-cover opacity-40 pointer-events-none select-none"
+                  className="w-full h-full object-contain scale-[1.15] opacity-40 pointer-events-none select-none"
                 />
               </div>
 
@@ -2617,6 +2612,22 @@ export default function App() {
                       bgClass = theme.gridCellActiveWord;
                     }
 
+                    const topGold =
+                      rIdx === 0 ||
+                      Boolean(activePuzzle.grid[rIdx - 1]?.[cIdx]?.isBlocked);
+                    const bottomGold =
+                      rIdx === gridSize - 1 ||
+                      Boolean(activePuzzle.grid[rIdx + 1]?.[cIdx]?.isBlocked);
+                    const leftGold =
+                      cIdx === 0 ||
+                      Boolean(activePuzzle.grid[rIdx]?.[cIdx - 1]?.isBlocked);
+                    const rightGold =
+                      cIdx === gridSize - 1 ||
+                      Boolean(activePuzzle.grid[rIdx]?.[cIdx + 1]?.isBlocked);
+
+                    const goldBorder = '1px solid #EAB308';
+                    const letterDivider = '0.5px solid rgba(100, 116, 139, 0.35)';
+
                     return (
                       <button
                         key={`${rIdx}-${cIdx}`}
@@ -2643,7 +2654,13 @@ export default function App() {
                           // Focus native mobile keyboard synchronously on cell tap
                           focusNativeKeyboard();
                         }}
-                        className={`relative w-full h-full ${bgClass} ${textClass} border-[0.5px] border-slate-500/35 flex items-center justify-center font-mono-tabular font-bold transition-colors duration-75 focus:outline-none cursor-pointer overflow-hidden`}
+                        style={{
+                          borderTop: topGold ? goldBorder : letterDivider,
+                          borderRight: rightGold ? goldBorder : letterDivider,
+                          borderBottom: bottomGold ? goldBorder : letterDivider,
+                          borderLeft: leftGold ? goldBorder : letterDivider,
+                        }}
+                        className={`relative w-full h-full ${bgClass} ${textClass} flex items-center justify-center font-mono-tabular font-bold transition-colors duration-75 focus:outline-none cursor-pointer overflow-hidden`}
                       >
                         {cell.number !== undefined && (
                           <span
@@ -2843,15 +2860,16 @@ export default function App() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="text-xs font-bold">
-                    Clue Difficulty · Easiest Base Today:{' '}
-                    <span className="uppercase font-mono-tabular">
+                    Clue Difficulty · Locked Score Base:{' '}
+                    <span className="uppercase font-mono-tabular text-amber-400">
                       {easiestBaseForActivePuzzle} (
-                      {stats.score.toLocaleString()} pts)
+                      {LETTER_POINTS_PER_DIFFICULTY[easiestBaseForActivePuzzle]}{' '}
+                      pts/ltr · {stats.score.toLocaleString()} pts)
                     </span>
                   </div>
                   <div className={`text-[11px] ${theme.textMuted}`}>
-                    Selecting an easier tier sets your fixed score base for this
-                    puzzle.
+                    Switch clue difficulty anytime; scoring locks to the easiest
+                    mode chosen.
                   </div>
                 </div>
                 <div
@@ -2859,9 +2877,9 @@ export default function App() {
                 >
                   {(
                     [
-                      { id: 'easy', label: 'Easy (1,000)' },
-                      { id: 'medium', label: 'Med (2,000)' },
-                      { id: 'hard', label: 'Hard (3,000)' },
+                      { id: 'easy', label: 'Easy (10/ltr)' },
+                      { id: 'medium', label: 'Med (13/ltr)' },
+                      { id: 'hard', label: 'Hard (15/ltr)' },
                     ] as const
                   ).map((mode) => (
                     <button

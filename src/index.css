@@ -86,6 +86,16 @@
     background-color: #472E28;
   }
 
+  .box-missing-piece-canvas {
+    background-color: #24073D;
+  }
+  .box-missing-piece-surface {
+    background-color: #360B59;
+  }
+  .box-missing-piece-elevated {
+    background-color: #4A1275;
+  }
+
   h1, h2, h3, .font-display {
     font-family: var(--font-display);
   }

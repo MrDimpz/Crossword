@@ -52,7 +52,12 @@ export type ClueStyle = 'mixed' | 'cryptic' | 'standard';
 
 export type GameState = 'TITLE_MENU' | 'PLAYING' | 'PAUSED' | 'VICTORY';
 
-export type VisualThemeId = 'editorial' | 'observatory' | 'botanical' | 'mahogany';
+export type VisualThemeId =
+  | 'editorial'
+  | 'observatory'
+  | 'botanical'
+  | 'mahogany'
+  | 'missing-piece';
 
 export type EditionScheduleType =
   | 'weekday-general'

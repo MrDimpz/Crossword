@@ -425,6 +425,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                         <option value="editorial">Editorial (Parchment &amp; ink)</option>
                         <option value="botanical">Botanical (Sage green &amp; ivory)</option>
                         <option value="mahogany">Mahogany (Deep espresso &amp; brass)</option>
+                        <option value="missing-piece">The Missing Piece (Royal purple &amp; gold)</option>
                       </select>
                     </div>
                   </div>
