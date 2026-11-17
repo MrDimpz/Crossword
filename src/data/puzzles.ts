@@ -5,19 +5,13 @@ import {
   GridSizeOption,
   PlacedClue,
   PuzzleDefinition,
+  RawWordItem,
   VisualThemeId,
   WordEntrySeed,
 } from '../types/crossword';
-
-interface RawWordItem {
-  answer: string;
-  easyClue: string;
-  mediumClue: string;
-  hardClue: string;
-  crypticBreakdown: string;
-  etymologyOrContext: string;
-  defaultIsCryptic: boolean;
-}
+import { LEXICON_EXPANSION_A } from './lexiconExpansionA';
+import { LEXICON_EXPANSION_B } from './lexiconExpansionB';
+import { LEXICON_EXPANSION_C } from './lexiconExpansionC';
 
 const RAW_LEXICON: RawWordItem[] = [
   // --- FILM & CINEMA ---
@@ -4250,7 +4244,14 @@ const RAW_LEXICON: RawWordItem[] = [
   },
 ];
 
-const UNIVERSAL_BRIDGE_WORDS: WordEntrySeed[] = RAW_LEXICON.map((item) => ({
+const COMBINED_RAW_LEXICON: RawWordItem[] = [
+  ...RAW_LEXICON,
+  ...LEXICON_EXPANSION_A,
+  ...LEXICON_EXPANSION_B,
+  ...LEXICON_EXPANSION_C,
+];
+
+const UNIVERSAL_BRIDGE_WORDS: WordEntrySeed[] = COMBINED_RAW_LEXICON.map((item) => ({
   ...item,
   standardClue: item.easyClue,
   crypticClue: item.hardClue,
@@ -5373,7 +5374,7 @@ export function generateArchivePuzzleForDate(
 
     const rotatedFallback = buildRotatedCohortPool(
       MASTER_INTERLEAVED_WORDS,
-      5,
+      10,
       epochDays,
       (seed ^ 0x9e3779b9) >>> 0
     );
@@ -5399,10 +5400,10 @@ export function generateArchivePuzzleForDate(
     );
   } else {
     // Weekday General Knowledge Crossword (Monday - Friday)
-    // Rotate across 5 disjoint ~93-word cohorts so consecutive weekdays rarely share answers
+    // Rotate across 10 disjoint ~100-word cohorts from the 1,000-word lexicon
     const pool = buildRotatedCohortPool(
       MASTER_INTERLEAVED_WORDS,
-      5,
+      10,
       epochDays,
       hash || 123456789
     );
@@ -5465,13 +5466,13 @@ export function generateQuick8x8PuzzleForDate(
     : Math.floor(parsedDate.getTime() / 86400000);
 
   // Filter to crisp 4-7 letter words ideal for an 8x8 Quick Crossword,
-  // rotating through 7 disjoint cohorts across the week
+  // rotating through 14 disjoint cohorts across two full weeks
   const quickEligible = MASTER_INTERLEAVED_WORDS.filter(
     (w) => w.answer.length >= 4 && w.answer.length <= 7
   );
   const pool = buildRotatedCohortPool(
     quickEligible,
-    7,
+    14,
     epochDays,
     (hash ^ 0x5a5a5a5a) >>> 0 || 246813579
   );

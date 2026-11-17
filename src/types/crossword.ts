@@ -87,6 +87,16 @@ export interface VisualTheme {
   accentBorder: string;
 }
 
+export interface RawWordItem {
+  answer: string;
+  easyClue: string;
+  mediumClue: string;
+  hardClue: string;
+  crypticBreakdown: string;
+  etymologyOrContext: string;
+  defaultIsCryptic: boolean;
+}
+
 export interface WordEntrySeed {
   answer: string;
   easyClue: string; // Straightforward direct definition
